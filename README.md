@@ -1,7 +1,3 @@
-# rl-trade-execution
-
-Optimal trade execution framework using reinforcement learning, trained on GARCH-simulated cryptocurrency price data. Minimizes market impact and price risk when executing large orders in volatile markets.
-
 # Optimal Trade Execution with Reinforcement Learning
 
 ## Project overview
