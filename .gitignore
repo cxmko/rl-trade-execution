@@ -1,0 +1,21 @@
+# Ignorer tous les fichiers CSV dans data
+data/**/*.csv
+
+# Ignorer les fichiers Python compilés
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Ignorer les environnements virtuels
+env/
+venv/
+ENV/
+rl-trade-exec/
+
+# Ignorer les fichiers de configuration IDE
+.idea/
+.vscode/
+*.swp
+.DS_Store
