@@ -1,4 +1,4 @@
-from src.data.collectors.binance_data import BinanceDataCollector
+#from src.data.collectors.binance_data import BinanceDataCollector
 from src.data.processors.feature_engineering import FeatureEngineer
 import os
 
@@ -50,10 +50,10 @@ def process_data():
 
 if __name__ == "__main__":
     print("Setting up project structure...")
-    setup_project()
+    #setup_project()
     
     print("\nDownloading data...")
-    download_data()
+    #download_data()
     
     print("\nProcessing data...")
     process_data()

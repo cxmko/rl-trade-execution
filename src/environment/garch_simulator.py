@@ -2,7 +2,8 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from arch import arch_model
-from typing import Tuple, Optional, List
+from sklearn.linear_model import Ridge
+from typing import Tuple, Optional, Dict
 
 
 class GarchCalibrator:
@@ -37,9 +38,8 @@ class GarchCalibrator:
         centered_returns = returns - self.mean_return
         
         # Ajuster le modèle GARCH(1,1) aux rendements centrés
-        print("Calibration du modèle GARCH(1,1)...")
         self.model = arch_model(centered_returns, vol='GARCH', p=1, q=1, rescale=False)
-        self.results = self.model.fit(disp='off')  # Désactiver l'affichage détaillé
+        self.results = self.model.fit(disp='off', show_warning=False)  # ← AJOUTÉ show_warning=False
         
         # Extraire les paramètres
         self.params = {
@@ -49,11 +49,12 @@ class GarchCalibrator:
             'mean_return': self.mean_return
         }
         
-        print("Paramètres GARCH calibrés:")
-        print(f"  omega: {self.params['omega']:.8f}")
-        print(f"  alpha: {self.params['alpha']:.8f}")
-        print(f"  beta: {self.params['beta']:.8f}")
-        print(f"  mean_return: {self.params['mean_return']:.8f}")
+        # MODIFIÉ: Commenter tous les prints pour réduire spam
+        # print("Paramètres GARCH calibrés:")
+        # print(f"  omega: {self.params['omega']:.8f}")
+        # print(f"  alpha: {self.params['alpha']:.8f}")
+        # print(f"  beta: {self.params['beta']:.8f}")
+        # print(f"  mean_return: {self.params['mean_return']:.8f}")
         
         # Sauvegarder le dernier prix et la dernière volatilité conditionnelle
         self.last_price = prices.iloc[-1]
@@ -117,24 +118,116 @@ class GarchCalibrator:
         plt.show()
 
 
+class VolumeModelCalibrator:
+    """
+    Classe pour calibrer un modèle volume-volatilité bimodal
+    """
+    def __init__(self):
+        self.volume_params = None
+        
+    def calibrate(self, volumes: np.ndarray, conditional_variances: np.ndarray) -> Dict:
+        """
+        Calibrer le modèle volume-volatilité avec approche bimodale
+        
+        Args:
+            volumes: Array des volumes observés
+            conditional_variances: Array des variances conditionnelles GARCH
+            
+        Returns:
+            dict: Paramètres du modèle volume
+        """
+        print("\n=== Calibration du modèle Volume-Volatilité (2 régimes) ===")
+        
+        # Identifier les deux régimes basés sur un seuil
+        volume_threshold = np.percentile(volumes, 25)
+        low_volume_mask = volumes <= volume_threshold
+        high_volume_mask = volumes > volume_threshold
+        
+        print(f"Seuil volume: {volume_threshold:.2f}")
+        print(f"Proportion faible volume: {low_volume_mask.sum() / len(volumes) * 100:.1f}%")
+        print(f"Proportion fort volume: {high_volume_mask.sum() / len(volumes) * 100:.1f}%")
+        
+        # Calculer le 99ème percentile et le max pour le clipping
+        volume_99p = np.percentile(volumes, 99)
+        volume_max = np.max(volumes)
+        
+        print(f"Volume 99ème percentile: {volume_99p:.2f}")
+        print(f"Volume maximum observé: {volume_max:.2f}")
+        
+        # --- RÉGIME FAIBLE VOLUME ---
+        low_volumes = volumes[low_volume_mask]
+        low_volume_mean = np.mean(low_volumes)
+        low_volume_std = np.std(low_volumes)
+        
+        print(f"\nRégime faible volume:")
+        print(f"  Moyenne: {low_volume_mean:.2f}")
+        print(f"  Écart-type: {low_volume_std:.2f}")
+        
+        # --- RÉGIME FORT VOLUME ---
+        high_volumes = volumes[high_volume_mask]
+        high_variances = conditional_variances[high_volume_mask]
+        
+        # Régression log-log
+        log_high_volumes = np.log(high_volumes + 1e-10)
+        log_high_variances = np.log(high_variances + 1e-10)
+        
+        model_high = Ridge(alpha=1.0)
+        model_high.fit(log_high_variances.reshape(-1, 1), log_high_volumes)
+        
+        c0_high = model_high.intercept_
+        c1_high = model_high.coef_[0]
+        
+        predictions_high = model_high.predict(log_high_variances.reshape(-1, 1))
+        residuals_high = log_high_volumes - predictions_high
+        high_volume_noise_std = np.std(residuals_high) * 0.7
+        
+        print(f"\nRégime fort volume:")
+        print(f"  c0 (intercept): {c0_high:.4f}")
+        print(f"  c1 (slope): {c1_high:.4f}")
+        print(f"  Écart-type du bruit: {high_volume_noise_std:.4f}")
+        print(f"  R²: {model_high.score(log_high_variances.reshape(-1, 1), log_high_volumes):.4f}")
+        
+        self.volume_params = {
+            'volume_threshold': volume_threshold,
+            'low_volume_mean': low_volume_mean,
+            'low_volume_std': low_volume_std,
+            'c0_high': c0_high,
+            'c1_high': c1_high,
+            'high_volume_noise_std': high_volume_noise_std,
+            'prob_low_volume': low_volume_mask.sum() / len(volumes),
+            'volume_99p': volume_99p,
+            'volume_max_observed': volume_max
+        }
+        
+        return self.volume_params
+
+
 class GarchSimulator:
     """
-    Simulateur de prix basé sur un modèle GARCH calibré
+    Simulateur de prix et volumes basé sur un modèle GARCH calibré
     """
-    def __init__(self, params: dict, initial_price: float, initial_volatility: Optional[float] = None):
+    def __init__(self, 
+                 garch_params: dict, 
+                 initial_price: float, 
+                 initial_volatility: Optional[float] = None,
+                 volume_params: Optional[Dict] = None):
         """
         Initialiser le simulateur GARCH
         
         Args:
-            params: Paramètres du modèle GARCH (omega, alpha, beta, mean_return)
+            garch_params: Paramètres du modèle GARCH (omega, alpha, beta, mean_return)
             initial_price: Prix initial pour la simulation
             initial_volatility: Volatilité initiale (si None, utilisera la variance inconditionnelle)
+            volume_params: Paramètres du modèle volume (optionnel)
         """
-        self.omega = params['omega']
-        self.alpha = params['alpha']
-        self.beta = params['beta']
-        self.mean_return = params['mean_return']
+        self.omega = garch_params['omega']
+        self.alpha = garch_params['alpha']
+        self.beta = garch_params['beta']
+        self.mean_return = garch_params['mean_return']
         self.price = initial_price
+        
+        # Paramètres volume (optionnel)
+        self.volume_params = volume_params
         
         # Calculer la variance inconditionnelle comme valeur initiale par défaut
         uncond_variance = self.omega / (1 - self.alpha - self.beta)
@@ -143,12 +236,12 @@ class GarchSimulator:
         self.last_variance = initial_volatility**2 if initial_volatility else uncond_variance
         self.last_return = 0.0
 
-    def step(self) -> Tuple[float, float]:
+    def _generate_next_return(self) -> float:
         """
-        Simuler un pas de temps selon le processus GARCH
+        Générer le prochain rendement selon le processus GARCH (méthode interne)
         
         Returns:
-            tuple: (nouveau prix, nouvelle volatilité)
+            float: Le rendement généré
         """
         # Mettre à jour la variance conditionnelle selon le modèle GARCH(1,1)
         current_variance = (self.omega + 
@@ -162,16 +255,70 @@ class GarchSimulator:
         current_volatility = np.sqrt(current_variance)
         current_return = self.mean_return + current_volatility * z
         
+        # Stocker pour le prochain pas
+        self.last_variance = current_variance
+        self.last_return = current_return - self.mean_return
+        
+        return current_return
+    
+    def _generate_volume(self) -> float:
+        """
+        Générer un volume selon le modèle bimodal
+        
+        Returns:
+            float: Volume généré
+        """
+        if self.volume_params is None:
+            return 0.0
+        
+        variance = self.last_variance
+        
+        # Tirer au sort le régime
+        if np.random.random() < self.volume_params['prob_low_volume']:
+            # RÉGIME FAIBLE VOLUME
+            volume = np.abs(np.random.normal(
+                self.volume_params['low_volume_mean'], 
+                self.volume_params['low_volume_std']
+            ))
+            volume = min(volume, self.volume_params['volume_threshold'])
+        else:
+            # RÉGIME FORT VOLUME
+            log_variance = np.log(variance + 1e-10)
+            noise = np.random.normal(0, self.volume_params['high_volume_noise_std'])
+            log_volume = self.volume_params['c0_high'] + self.volume_params['c1_high'] * log_variance + noise
+            volume = np.exp(log_volume)
+            
+            volume = max(volume, self.volume_params['volume_threshold'])
+            
+            # Si dépasse le max observé, tirer aléatoirement entre p99 et max
+            if volume > self.volume_params['volume_max_observed']:
+                volume = np.random.uniform(
+                    self.volume_params['volume_99p'],
+                    self.volume_params['volume_max_observed']
+                )
+        
+        return volume
+
+    def step(self) -> Tuple[float, float, float]:
+        """
+        Simuler un pas de temps selon le processus GARCH
+        
+        Returns:
+            tuple: (nouveau prix, nouvelle volatilité, nouveau volume)
+        """
+        current_return = self._generate_next_return()
+        
         # Mettre à jour le prix
         self.price = self.price * np.exp(current_return)
         
-        # Stocker pour le prochain pas
-        self.last_variance = current_variance
-        self.last_return = current_return - self.mean_return  # Stocker le rendement centré
+        current_volatility = np.sqrt(self.last_variance)
         
-        return self.price, current_volatility
+        # Générer le volume si le modèle est disponible
+        current_volume = self._generate_volume()
+        
+        return self.price, current_volatility, current_volume
     
-    def simulate_path(self, n_steps: int) -> Tuple[np.ndarray, np.ndarray]:
+    def simulate_path(self, n_steps: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Simuler une trajectoire de prix sur plusieurs pas de temps
         
@@ -179,10 +326,11 @@ class GarchSimulator:
             n_steps: Nombre de pas de simulation
             
         Returns:
-            tuple: (trajectoire des prix, trajectoire des volatilités)
+            tuple: (trajectoire des prix, trajectoire des volatilités, trajectoire des volumes)
         """
         prices = np.zeros(n_steps + 1)
         volatilities = np.zeros(n_steps + 1)
+        volumes = np.zeros(n_steps) if self.volume_params else None
         
         # Valeurs initiales
         prices[0] = self.price
@@ -190,9 +338,11 @@ class GarchSimulator:
         
         # Simuler la trajectoire
         for i in range(n_steps):
-            prices[i+1], volatilities[i+1] = self.step()
+            prices[i+1], volatilities[i+1], volume = self.step()
+            if volumes is not None:
+                volumes[i] = volume
             
-        return prices, volatilities
+        return prices, volatilities, volumes
     
     def reset(self, price: Optional[float] = None, volatility: Optional[float] = None) -> None:
         """
@@ -211,206 +361,66 @@ class GarchSimulator:
         self.last_return = 0.0
 
 
-class MarketEnvWithGarch:
+def calibrate_full_model(data: pd.DataFrame) -> Tuple[Dict, Dict]:
     """
-    Environnement de marché utilisant un simulateur GARCH pour l'exécution d'ordres
-    Cette classe est une ébauche qui peut être adaptée pour implémenter un environnement Gymnasium complet
+    Calibrer à la fois le modèle GARCH et le modèle volume
+    
+    Args:
+        data: DataFrame avec colonnes 'close' et 'volume'
+        
+    Returns:
+        tuple: (garch_params, volume_params)
     """
-    def __init__(self, 
-                 garch_params: dict, 
-                 initial_price: float, 
-                 initial_volatility: float,
-                 impact_factor: float = 0.1,
-                 max_quantity: float = 1.0,
-                 max_steps: int = 60):
-        """
-        Initialiser l'environnement
-        
-        Args:
-            garch_params: Paramètres du modèle GARCH
-            initial_price: Prix initial
-            initial_volatility: Volatilité initiale
-            impact_factor: Facteur d'impact de marché (lambda)
-            max_quantity: Quantité totale à exécuter
-            max_steps: Nombre maximum de pas par épisode
-        """
-        # Initialiser le simulateur GARCH
-        self.simulator = GarchSimulator(garch_params, initial_price, initial_volatility)
-        
-        # Paramètres d'exécution
-        self.impact_factor = impact_factor
-        self.max_quantity = max_quantity
-        self.max_steps = max_steps
-        
-        # État de l'environnement
-        self.current_step = 0
-        self.remaining_quantity = max_quantity
-        self.price_no_impact = initial_price
-        self.volatility = initial_volatility
-        self.cash = 0.0
-        self.done = False
-
-    def reset(self, 
-              seed: Optional[int] = None, 
-              initial_price: Optional[float] = None,
-              initial_volatility: Optional[float] = None) -> List[float]:
-        """
-        Réinitialiser l'environnement au début d'un nouvel épisode
-        
-        Args:
-            seed: Graine aléatoire
-            initial_price: Prix initial (si None, valeur par défaut)
-            initial_volatility: Volatilité initiale (si None, valeur par défaut)
-            
-        Returns:
-            List: État initial normalisé
-        """
-        # Fixer la graine aléatoire si spécifiée
-        if seed is not None:
-            np.random.seed(seed)
-            
-        # Réinitialiser les variables d'état
-        self.current_step = 0
-        self.remaining_quantity = self.max_quantity
-        self.cash = 0.0
-        self.done = False
-        
-        # Réinitialiser le simulateur
-        self.simulator.reset(initial_price, initial_volatility)
-        
-        # Obtenir le prix et la volatilité initiaux
-        self.price_no_impact, self.volatility = self.simulator.step()
-        
-        return self._get_state()
+    # Calibrer GARCH
+    garch_calibrator = GarchCalibrator()
+    garch_params = garch_calibrator.fit(data['close'])
     
-    def step(self, action: int) -> Tuple[List[float], float, bool, dict]:
-        """
-        Exécuter une action et avancer l'environnement d'un pas
-        
-        Args:
-            action: Indice correspondant à la fraction de l'inventaire restant à vendre
-            
-        Returns:
-            tuple: (nouvel état, récompense, terminé, info)
-        """
-        # Mapping de l'action à une quantité à vendre
-        # Par exemple, action 0->0%, 1->10%, 2->20%... 10->100% de l'inventaire restant
-        action_values = np.linspace(0, 1, 11)
-        fraction = action_values[action]
-        quantity_to_sell = fraction * self.remaining_quantity
-        
-        # Calculer l'impact de marché et le prix effectif
-        relative_order_size = quantity_to_sell / self.max_quantity
-        price_impact = self.impact_factor * np.sqrt(relative_order_size) * self.price_no_impact * (self.volatility / 0.2)
-        execution_price = self.price_no_impact - price_impact
-        
-        # Mettre à jour le cash et la quantité restante
-        cash_received = quantity_to_sell * execution_price
-        self.cash += cash_received
-        self.remaining_quantity -= quantity_to_sell
-        
-        # Simuler le prochain prix et la volatilité
-        self.price_no_impact, self.volatility = self.simulator.step()
-        
-        # Incrémenter le compteur d'étapes
-        self.current_step += 1
-        
-        # Vérifier si l'épisode est terminé
-        self.done = (self.current_step >= self.max_steps) or (self.remaining_quantity <= 1e-6)
-        
-        # Récompense = cash reçu lors de cette étape
-        reward = cash_received
-        
-        # Informations additionnelles
-        info = {
-            "price": self.price_no_impact,
-            "volatility": self.volatility,
-            "cash": self.cash,
-            "remaining": self.remaining_quantity,
-            "step": self.current_step,
-            "execution_price": execution_price,
-            "price_impact": price_impact
-        }
-        
-        return self._get_state(), reward, self.done, info
+    # Calibrer modèle volume
+    conditional_variances = garch_calibrator.results.conditional_volatility ** 2
+    volumes = data['volume'].values[len(data) - len(conditional_variances):]
     
-    def _get_state(self) -> List[float]:
-        """
-        Construire le vecteur d'état normalisé
-        
-        Returns:
-            List: État normalisé (inventaire normalisé, temps normalisé, volatilité normalisée)
-        """
-        # Normalisation simple
-        normalized_inventory = self.remaining_quantity / self.max_quantity
-        normalized_time = self.current_step / self.max_steps
-        normalized_volatility = self.volatility / 0.2  # Supposons 0.2 comme volatilité typique
-        
-        # État augmenté
-        # Ici, on pourrait ajouter d'autres features comme MACD, position de la bougie, etc.
-        
-        return [normalized_inventory, normalized_time, normalized_volatility]
+    volume_calibrator = VolumeModelCalibrator()
+    volume_params = volume_calibrator.calibrate(volumes, conditional_variances.values)
+    
+    return garch_params, volume_params
 
 
-# Code d'utilisation
+# Code d'exemple
 if __name__ == "__main__":
-    # Exemple d'utilisation
     import pandas as pd
     
-    # Charger les données (supposons qu'elles sont déjà disponibles)
-    data = pd.read_csv('data/raw/BTCUSDT_1m_train_2023-01-01_to_2023-12-31.csv', index_col=0, parse_dates=True)
+    # Charger les données
+    data = pd.read_csv('../../data/raw/BTCUSDT_1m_train_2023-01-01_to_2023-12-31.csv', 
+                       index_col=0, parse_dates=True)
     
-    # Calibrer le modèle GARCH
-    calibrator = GarchCalibrator()
-    params = calibrator.fit(data['close'])
+    # Calibrer les modèles
+    garch_params, volume_params = calibrate_full_model(data)
     
-    # Visualiser les diagnostics
-    calibrator.plot_diagnostics(data['close'])
-    
-    # Créer un simulateur avec les paramètres calibrés
+    # Créer un simulateur
     initial_price = data['close'].iloc[-1]
-    initial_volatility = np.sqrt(calibrator.results.conditional_volatility.iloc[-1]**2)
-    simulator = GarchSimulator(params, initial_price, initial_volatility)
+    initial_volatility = np.sqrt((garch_params['omega'] / 
+                                 (1 - garch_params['alpha'] - garch_params['beta'])))
     
-    # Simuler une trajectoire et la visualiser
-    n_steps = 1000
-    prices, vols = simulator.simulate_path(n_steps)
+    simulator = GarchSimulator(garch_params, initial_price, initial_volatility, volume_params)
     
-    plt.figure(figsize=(12, 6))
-    plt.subplot(2, 1, 1)
-    plt.plot(prices)
-    plt.title('Prix simulés avec modèle GARCH(1,1)')
-    plt.ylabel('Prix')
+    # Simuler une trajectoire
+    prices, vols, volumes = simulator.simulate_path(1000)
     
-    plt.subplot(2, 1, 2)
-    plt.plot(vols)
-    plt.title('Volatilité simulée')
-    plt.ylabel('Volatilité')
-    plt.xlabel('Pas de temps')
+    # Visualiser
+    fig, axs = plt.subplots(3, 1, figsize=(12, 10))
+    
+    axs[0].plot(prices)
+    axs[0].set_title('Prix simulés (GARCH)')
+    axs[0].set_ylabel('Prix')
+    
+    axs[1].plot(vols)
+    axs[1].set_title('Volatilité simulée')
+    axs[1].set_ylabel('Volatilité')
+    
+    axs[2].plot(volumes)
+    axs[2].set_title('Volumes simulés (Modèle bimodal)')
+    axs[2].set_ylabel('Volume')
+    axs[2].set_xlabel('Pas de temps')
     
     plt.tight_layout()
     plt.show()
-    
-    # Exemple d'utilisation de l'environnement
-    print("\nCréation de l'environnement d'exécution avec GARCH...")
-    env = MarketEnvWithGarch(params, initial_price, initial_volatility)
-    
-    # Simuler quelques actions
-    state = env.reset()
-    print(f"État initial: {state}")
-    
-    for i in range(10):
-        # Action aléatoire (0 à 10)
-        action = np.random.randint(0, 11)
-        next_state, reward, done, info = env.step(action)
-        
-        print(f"\nÉtape {i+1}")
-        print(f"  Action: {action}")
-        print(f"  Récompense: {reward:.2f}")
-        print(f"  Nouvel état: {next_state}")
-        print(f"  Prix: {info['price']:.2f}, Volatilité: {info['volatility']:.4f}")
-        print(f"  Inventaire restant: {info['remaining']:.4f} ({info['remaining']/env.max_quantity*100:.1f}%)")
-        
-        if done:
-            print("\nÉpisode terminé!")
-            break

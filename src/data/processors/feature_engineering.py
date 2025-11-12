@@ -84,7 +84,7 @@ class FeatureEngineer:
                     continue
                 
                 # Normalize training data
-                train_normalized[feature] = (train_df[feature] - min_val) / (max_val - min_val)
+                train_normalized[feature] = 1e-6+(train_df[feature] - min_val) / (max_val - min_val)
                 
                 # Normalize test data using same parameters if provided
                 if test_normalized is not None and feature in test_normalized:
