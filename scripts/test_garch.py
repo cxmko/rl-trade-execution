@@ -4,74 +4,292 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
+import argparse
+from tqdm import tqdm
 
-# Ajouter le dossier parent au path pour importer les modules du projet
 sys.path.append(os.path.abspath(".."))
-from src.environment.garch_simulator import GarchCalibrator, GarchSimulator
+from src.environment.garch_simulator import (
+    GarchCalibrator, 
+    GarchSimulator, 
+    VolumeModelCalibrator,
+    calibrate_full_model
+)
+
 
 def calculate_realized_volatility(prices, window=20):
-    """
-    Calcule la volatilité réalisée basée sur l'écart-type des rendements récents
-    """
-    # Convertir en array numpy si c'est une série
+    """Calcule la volatilité réalisée"""
     if isinstance(prices, pd.Series):
         prices = prices.values
         
-    # Calculer les rendements logarithmiques
     returns = np.diff(np.log(prices))
-    
-    # Initialiser le tableau de volatilités
     volatility = np.zeros(len(prices))
     
-    # Pour chaque point, calculer la volatilité sur la fenêtre précédente
     for i in range(1, len(prices)):
-        # Déterminer la taille de la fenêtre disponible
         window_size = min(window, i)
-        
         if window_size > 0:
-            # Extraire les rendements dans la fenêtre
             window_returns = returns[i-window_size:i]
-            # Calculer l'écart-type
             volatility[i] = np.std(window_returns) if len(window_returns) > 0 else 0
     
     return volatility
 
-def sample_and_visualize_garch():
-    """Échantillonne et visualise les données simulées par le modèle GARCH"""
+
+def compute_statistics(simulated_data, real_data):
+    """Calcule les statistiques comparatives"""
+    mean_real = np.mean(real_data)
+    median_real = np.median(real_data)
+    std_real = np.std(real_data)
     
-    # 1. Charger les données historiques
-    print("Chargement des données historiques...")
-    data_path = 'C:/Users/Cameron/OneDrive/Bureau/Ecole/IPP/DS/projet/rl-trade-execution/data/raw/BTCUSDT_1m_train_2023-01-01_to_2023-12-31.csv'
+    eps = 1e-10
+    
+    stats = {
+        'mean_diff': np.abs(np.mean(simulated_data) - mean_real),
+        'mean_rel_error': np.abs(np.mean(simulated_data) - mean_real) / (mean_real + eps) * 100,
+        'median_diff': np.abs(np.median(simulated_data) - median_real),
+        'median_rel_error': np.abs(np.median(simulated_data) - median_real) / (median_real + eps) * 100,
+        'std_diff': np.abs(np.std(simulated_data) - std_real),
+        'std_rel_error': np.abs(np.std(simulated_data) - std_real) / (std_real + eps) * 100,
+        'min_diff': np.abs(np.min(simulated_data) - np.min(real_data)),
+        'max_diff': np.abs(np.max(simulated_data) - np.max(real_data)),
+        'skewness_diff': np.abs(pd.Series(simulated_data).skew() - pd.Series(real_data).skew()),
+        'kurtosis_diff': np.abs(pd.Series(simulated_data).kurtosis() - pd.Series(real_data).kurtosis()),
+    }
+    
+    for key in stats:
+        if 'rel_error' in key:
+            stats[key] = min(stats[key], 1000.0)
+    
+    return stats
+
+
+def run_test_mode(data, n_tests=100, n_steps=60):
+    """Mode test: effectue plusieurs simulations et compare avec les données réelles"""
+    print(f"\n{'='*80}")
+    print(f"MODE TEST: {n_tests} simulations de {n_steps} pas")
+    print(f"{'='*80}\n")
+    
+    # Calibrer les modèles GARCH et volume
+    print("Calibration du modèle GARCH global...")
+    garch_params, volume_params = calibrate_full_model(data)
+    
+    all_price_stats = []
+    all_volume_stats = []
+    all_volatility_stats = []
+    all_returns_stats = []
+    
+    all_sim_volumes = []
+    all_real_volumes = []
+    
+    n_failed = 0
+    n_unstable = 0
+    
+    print(f"\nExécution de {n_tests} simulations...")
+    for test_idx in tqdm(range(n_tests)):
+        random_idx = np.random.randint(100, len(data) - n_steps - 1)
+        
+        window_start = max(0, random_idx - 5000)
+        window_data = data.iloc[window_start:random_idx]
+        
+        try:
+            # Calibrer localement
+            local_calibrator = GarchCalibrator()
+            local_params = local_calibrator.fit(window_data['close'])
+            
+            if local_params['alpha'] + local_params['beta'] >= 0.999:
+                n_unstable += 1
+                local_params = garch_params
+                
+            random_price = data['close'].iloc[random_idx]
+            local_volatility = np.sqrt(local_calibrator.results.conditional_volatility.iloc[-1]**2)
+            local_volatility = min(local_volatility, 0.1)
+            
+            # Créer le simulateur avec modèle volume
+            simulator = GarchSimulator(local_params, random_price, local_volatility, volume_params)
+            sim_prices, sim_vols, sim_volumes = simulator.simulate_path(n_steps)
+            
+            if np.any(np.isnan(sim_prices)) or np.any(np.isinf(sim_prices)):
+                n_failed += 1
+                continue
+            
+            if np.max(sim_prices) > random_price * 10 or np.min(sim_prices) < random_price * 0.1:
+                n_failed += 1
+                continue
+            
+            # Données réelles
+            real_prices = data['close'].iloc[random_idx:random_idx + n_steps + 1].values
+            real_volumes = data['volume'].iloc[random_idx:random_idx + n_steps].values
+            
+            all_sim_volumes.extend(sim_volumes)
+            all_real_volumes.extend(real_volumes)
+            
+            # Calculs
+            sim_returns = np.diff(np.log(sim_prices))
+            real_returns = np.diff(np.log(real_prices))
+            
+            if np.any(np.isnan(sim_returns)) or np.any(np.isinf(sim_returns)):
+                n_failed += 1
+                continue
+            
+            sim_realized_vol = calculate_realized_volatility(sim_prices)
+            real_realized_vol = calculate_realized_volatility(real_prices)
+            
+            price_stats = compute_statistics(sim_prices, real_prices)
+            volume_stats = compute_statistics(sim_volumes, real_volumes)
+            volatility_stats = compute_statistics(sim_realized_vol[1:], real_realized_vol[1:])
+            returns_stats = compute_statistics(sim_returns, real_returns)
+            
+            if any(np.isnan(list(price_stats.values())) + np.isinf(list(price_stats.values()))):
+                n_failed += 1
+                continue
+            
+            all_price_stats.append(price_stats)
+            all_volume_stats.append(volume_stats)
+            all_volatility_stats.append(volatility_stats)
+            all_returns_stats.append(returns_stats)
+            
+        except Exception as e:
+            n_failed += 1
+            continue
+    
+    # Afficher résultats
+    print(f"\n{'='*80}")
+    print(f"STATISTIQUES DE SIMULATION")
+    print(f"{'='*80}")
+    print(f"Simulations réussies: {len(all_price_stats)} / {n_tests}")
+    print(f"Simulations échouées: {n_failed}")
+    print(f"Modèles instables: {n_unstable}")
+    
+    if len(all_price_stats) == 0:
+        print("\n❌ ERREUR: Aucune simulation réussie!")
+        return None
+    
+    print("\n" + "="*80)
+    print("RÉSULTATS AGRÉGÉS SUR LES TESTS")
+    print("="*80)
+    
+    def print_aggregated_stats(stats_list, category_name):
+        print(f"\n{category_name}:")
+        print("-" * 60)
+        
+        metrics = list(stats_list[0].keys())
+        for metric in metrics:
+            values = [s[metric] for s in stats_list]
+            values_array = np.array(values)
+            mean_temp = np.mean(values_array)
+            std_temp = np.std(values_array)
+            mask = np.abs(values_array - mean_temp) < 3 * std_temp
+            values_filtered = values_array[mask]
+            
+            if len(values_filtered) == 0:
+                values_filtered = values_array
+            
+            mean_val = np.mean(values_filtered)
+            std_val = np.std(values_filtered)
+            min_val = np.min(values_filtered)
+            max_val = np.max(values_filtered)
+            
+            if 'rel_error' in metric:
+                print(f"  {metric:25s}: {mean_val:8.2f}% ± {std_val:6.2f}% (min: {min_val:6.2f}%, max: {max_val:6.2f}%)")
+            else:
+                print(f"  {metric:25s}: {mean_val:8.4f} ± {std_val:6.4f} (min: {min_val:6.4f}, max: {max_val:6.4f})")
+    
+    print_aggregated_stats(all_price_stats, "PRIX")
+    print_aggregated_stats(all_volume_stats, "VOLUMES")
+    print_aggregated_stats(all_volatility_stats, "VOLATILITÉ RÉALISÉE")
+    print_aggregated_stats(all_returns_stats, "RENDEMENTS")
+    
+    # Statistiques volumes
+    print("\n" + "="*80)
+    print("STATISTIQUES DÉTAILLÉES DES VOLUMES")
+    print("="*80)
+    
+    all_sim_volumes = np.array(all_sim_volumes)
+    all_real_volumes = np.array(all_real_volumes)
+    
+    print("\nVolumes réels:")
+    print(f"  Moyenne: {np.mean(all_real_volumes):.2f}")
+    print(f"  Médiane: {np.median(all_real_volumes):.2f}")
+    print(f"  Écart-type: {np.std(all_real_volumes):.2f}")
+    print(f"  Min: {np.min(all_real_volumes):.2f}")
+    print(f"  Max: {np.max(all_real_volumes):.2f}")
+    
+    print("\nVolumes simulés:")
+    print(f"  Moyenne: {np.mean(all_sim_volumes):.2f}")
+    print(f"  Médiane: {np.median(all_sim_volumes):.2f}")
+    print(f"  Écart-type: {np.std(all_sim_volumes):.2f}")
+    print(f"  Min: {np.min(all_sim_volumes):.2f}")
+    print(f"  Max: {np.max(all_sim_volumes):.2f}")
+    
+    print("\nDifférence relative:")
+    print(f"  Moyenne: {(np.mean(all_sim_volumes) - np.mean(all_real_volumes)) / np.mean(all_real_volumes) * 100:.2f}%")
+    print(f"  Écart-type: {(np.std(all_sim_volumes) - np.std(all_real_volumes)) / np.std(all_real_volumes) * 100:.2f}%")
+    
+    create_summary_plot(all_price_stats, all_volume_stats, all_volatility_stats, all_returns_stats)
+    
+    return {
+        'price_stats': all_price_stats,
+        'volume_stats': all_volume_stats,
+        'volatility_stats': all_volatility_stats,
+        'returns_stats': all_returns_stats
+    }
+
+
+def create_summary_plot(price_stats, volume_stats, volatility_stats, returns_stats):
+    """Crée un graphique récapitulatif"""
+    fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+    fig.suptitle('Analyse comparative: Simulé vs Réel', fontsize=16, fontweight='bold')
+    
+    def plot_metrics(ax, stats_list, title, color):
+        metrics = ['mean_rel_error', 'median_rel_error', 'std_rel_error']
+        labels = ['Erreur Moyenne\n(%)', 'Erreur Médiane\n(%)', 'Erreur Écart-type\n(%)']
+        
+        values = []
+        errors = []
+        for metric in metrics:
+            metric_values = [s[metric] for s in stats_list]
+            values.append(np.mean(metric_values))
+            errors.append(np.std(metric_values))
+        
+        x = np.arange(len(labels))
+        bars = ax.bar(x, values, yerr=errors, capsize=5, alpha=0.7, color=color, edgecolor='black')
+        
+        ax.set_ylabel('Erreur relative (%)', fontsize=11)
+        ax.set_title(title, fontsize=13, fontweight='bold')
+        ax.set_xticks(x)
+        ax.set_xticklabels(labels, fontsize=10)
+        ax.grid(True, alpha=0.3, axis='y')
+        
+        for i, (bar, val, err) in enumerate(zip(bars, values, errors)):
+            height = bar.get_height()
+            ax.text(bar.get_x() + bar.get_width()/2., height + err,
+                   f'{val:.1f}%\n±{err:.1f}%',
+                   ha='center', va='bottom', fontsize=9, fontweight='bold')
+    
+    plot_metrics(axes[0, 0], price_stats, 'PRIX', 'steelblue')
+    plot_metrics(axes[0, 1], volume_stats, 'VOLUMES', 'coral')
+    plot_metrics(axes[1, 0], volatility_stats, 'VOLATILITÉ RÉALISÉE', 'mediumseagreen')
+    plot_metrics(axes[1, 1], returns_stats, 'RENDEMENTS', 'mediumpurple')
+    
+    plt.tight_layout()
+    plt.savefig('../sample/garch_test_summary.png', dpi=150, bbox_inches='tight')
+    print("\n✓ Graphique sauvegardé: ../sample/garch_test_summary.png")
+    plt.close()
+
+
+def sample_and_visualize_garch():
+    """Mode visualisation"""
+    print("Chargement des données...")
+    data_path = '../data/raw/BTCUSDT_1m_train_2023-01-01_to_2023-12-31.csv'
     data = pd.read_csv(data_path, index_col=0, parse_dates=True)
     
-    # 2. Calibrer le modèle GARCH
-    print("Calibration du modèle GARCH...")
-    calibrator = GarchCalibrator()
-    params = calibrator.fit(data['close'])
+    print("Calibration des modèles...")
+    garch_params, volume_params = calibrate_full_model(data)
     
-    # Obtenir les derniers prix et volatilité pour initialiser le simulateur
-    initial_price = data['close'].iloc[-1]
-    initial_volatility = np.sqrt(calibrator.results.conditional_volatility.iloc[-1]**2)
+    n_simulations = 5
+    n_steps = 1440
     
-    # 3. Générer plusieurs trajectoires simulées
-    n_simulations = 5  # Nombre de trajectoires
-    n_steps = 1440     # Nombre de pas (1 jour de données minutes)
-    
-    print(f"Génération de {n_simulations} trajectoires de prix simulées...")
-    simulated_paths = []
-    simulated_vols = []
-    real_paths = []     # Pour stocker les trajectoires réelles
-    start_indices = []  # Pour stocker les indices de départ
-    # Choisir un point de départ aléatoire dans les données d'entraînement
-    # (en évitant le début pour avoir suffisamment d'historique pour la volatilité conditionnelle)
-    # Éviter aussi la fin pour avoir suffisamment de données futures pour la trajectoire réelle
     random_idx = np.random.randint(100, len(data) - n_steps - 1)
-    start_indices.append(random_idx)
-    
-    # Extraire prix et recalibrer le modèle GARCH autour de ce point
     random_price = data['close'].iloc[random_idx]
     
-    # Calibrer le GARCH sur une fenêtre autour du point choisi
     window_start = max(0, random_idx - 5000)
     window_data = data.iloc[window_start:random_idx]
     
@@ -79,140 +297,70 @@ def sample_and_visualize_garch():
     local_params = local_calibrator.fit(window_data['close'])
     local_volatility = np.sqrt(local_calibrator.results.conditional_volatility.iloc[-1]**2)
     
+    simulated_paths = []
+    simulated_vols = []
+    simulated_volumes = []
+    
     for i in range(n_simulations):
-        print(f"Simulation {i+1}: Point de départ aléatoire à l'index {random_idx}, prix={random_price:.2f}")
+        print(f"Simulation {i+1}/{n_simulations}")
+        simulator = GarchSimulator(local_params, random_price, local_volatility, volume_params)
+        prices, vols, volumes = simulator.simulate_path(n_steps)
         
-        # Créer le simulateur avec ces paramètres
-        simulator = GarchSimulator(local_params, random_price, local_volatility)
-        prices, vols = simulator.simulate_path(n_steps)
-        
-        # Stocker les résultats
         simulated_paths.append(prices)
         simulated_vols.append(vols)
-        
-    # Extraire la trajectoire réelle correspondante
-    if random_idx + n_steps < len(data):
-        real_trajectory = data['close'].iloc[random_idx:random_idx + n_steps + 1].values
-        real_paths.append(real_trajectory)
-    else:
-        # Si on atteint la fin des données, prendre ce qui est disponible
-        real_trajectory = data['close'].iloc[random_idx:].values
-        # Compléter avec la dernière valeur pour avoir la même longueur
-        padding = np.full(n_steps + 1 - len(real_trajectory), real_trajectory[-1])
-        real_trajectory = np.concatenate([real_trajectory, padding])
-        real_paths.append(real_trajectory)  
-
-    # 4. Créer un tableau des données simulées
-    # Créer un index de dates pour les données simulées
-    start_date = datetime.now()
-    dates = [start_date + timedelta(minutes=i) for i in range(n_steps + 1)]
+        simulated_volumes.append(volumes)
     
-    # Créer un DataFrame pour les données simulées
-    simulated_df = pd.DataFrame(index=dates)
+    # Données réelles
+    real_trajectory = data['close'].iloc[random_idx:random_idx + n_steps + 1].values
+    real_volume_trajectory = data['volume'].iloc[random_idx:random_idx + n_steps].values
     
-    # Ajouter les prix simulés et réels
-    for i in range(n_simulations):
-        simulated_df[f'price_sim_{i+1}'] = simulated_paths[i]
-    simulated_df[f'price_real_{1}'] = real_paths[0]  # Ajouter la trajectoire réelle
-    
-    # Calculer et ajouter la volatilité réalisée pour chaque simulation
-    for i in range(n_simulations):
-        prices = simulated_df[f'price_sim_{i+1}'].values
-        realized_vol = calculate_realized_volatility(prices)
-        simulated_df[f'vol_realized_sim_{i+1}'] = realized_vol
-    
-    # Calculer et ajouter la volatilité réalisée pour les données réelles
-    real_prices = simulated_df[f'price_real_{1}'].values
-    real_realized_vol = calculate_realized_volatility(real_prices)
-    simulated_df['vol_realized_real'] = real_realized_vol
-    
-    # 5. Afficher un échantillon du tableau
-    print("\nAperçu des données simulées avec volatilité réalisée:")
-    print(simulated_df.head(10))
-    
-    # 6. Visualiser les trajectoires de prix simulées et réelles
+    # Graphiques
     fig, axs = plt.subplots(3, 1, figsize=(15, 15))
     
-    # Trajectoires de prix
-    ax1 = axs[0]
-    
-    # Tracer les trajectoires simulées
     for i in range(n_simulations):
-        ax1.plot(simulated_df.index, simulated_df[f'price_sim_{i+1}'], 
-                 label=f'Simulation {i+1}', alpha=0.7)
+        axs[0].plot(simulated_paths[i], label=f'Simulation {i+1}', alpha=0.7)
+    axs[0].plot(real_trajectory, '--', label='Réel', color='black', linewidth=2)
+    axs[0].set_title('Trajectoires de prix (GARCH)')
+    axs[0].set_ylabel('Prix')
+    axs[0].legend()
     
-    # Tracer la trajectoire réelle avec des tirets
-    ax1.plot(simulated_df.index, simulated_df[f'price_real_{1}'], 
-            linestyle='--', label=f'Réel', alpha=0.7, color='black', linewidth=2)
-    
-    ax1.set_title('Trajectoires de prix simulées vs réelles (GARCH)')
-    ax1.set_ylabel('Prix')
-    ax1.legend()
-    
-    # Trajectoires de volatilité GARCH (on garde pour référence)
-    ax2 = axs[1]
     for i in range(n_simulations):
-        ax2.plot(simulated_df.index, simulated_vols[i], 
-                 label=f'Vol GARCH Sim {i+1}', alpha=0.7)
+        axs[1].plot(simulated_vols[i], label=f'Vol Sim {i+1}', alpha=0.7)
+    axs[1].set_title('Volatilité GARCH')
+    axs[1].set_ylabel('Volatilité')
+    axs[1].legend()
     
-    ax2.set_title('Trajectoires de volatilité GARCH (modèle interne)')
-    ax2.set_ylabel('Volatilité GARCH')
-    ax2.legend()
-    
-    # Trajectoires de volatilité réalisée
-    ax3 = axs[2]
-    
-    # Tracer les volatilités réalisées simulées
     for i in range(n_simulations):
-        ax3.plot(simulated_df.index, simulated_df[f'vol_realized_sim_{i+1}'], 
-                 label=f'Vol Réalisée Sim {i+1}', alpha=0.7)
+        axs[2].plot(simulated_volumes[i], label=f'Vol Sim {i+1}', alpha=0.7)
+    axs[2].plot(real_volume_trajectory, '--', label='Réel', color='black', linewidth=2)
+    axs[2].set_title('Volumes (Modèle bimodal)')
+    axs[2].set_ylabel('Volume')
+    axs[2].set_xlabel('Pas de temps')
+    axs[2].legend()
     
-    # Tracer la volatilité réalisée réelle
-    ax3.plot(simulated_df.index, simulated_df['vol_realized_real'], 
-            linestyle='--', label=f'Vol Réalisée Réelle', alpha=0.9, color='black', linewidth=2)
-    
-    ax3.set_title('Volatilité réalisée (écart-type des rendements sur fenêtre glissante)')
-    ax3.set_ylabel('Volatilité Réalisée')
-    ax3.legend()
-    
-    # Ajuster l'espacement entre les sous-graphiques
-    fig.subplots_adjust(hspace=0.3)
-    
-    # 7. Comparer les distributions des rendements
-    plt.figure(figsize=(12, 6))
-    
-    # Histogramme des rendements réels
-    historical_returns = np.diff(np.log(data['close'].iloc[-n_steps:].values))
-    plt.hist(historical_returns, bins=50, alpha=0.5, color='blue', 
-             density=True, label='Rendements historiques')
-    
-    # Histogrammes des rendements simulés
-    simulated_returns = []
-    for i in range(n_simulations):
-        prices = simulated_df[f'price_sim_{i+1}'].values
-        returns = np.diff(np.log(prices))
-        simulated_returns.append(returns)
-    
-    all_sim_returns = np.concatenate(simulated_returns)
-    plt.hist(all_sim_returns, bins=50, alpha=0.5, color='red', 
-             density=True, label='Rendements simulés')
-    
-    plt.title('Comparaison des distributions des rendements')
-    plt.xlabel('Rendement logarithmique')
-    plt.ylabel('Densité')
-    plt.legend()
-    
-    # Afficher les graphiques
     plt.tight_layout()
+    plt.savefig('../sample/garch_simulation.png', dpi=150)
+    print("\n✓ Visualisation sauvegardée: ../sample/garch_simulation.png")
     plt.show()
-    
-    return simulated_df
+
 
 if __name__ == "__main__":
-    df_simulated = sample_and_visualize_garch()
+    parser = argparse.ArgumentParser(description='Test du simulateur GARCH')
+    parser.add_argument('--mode', type=str, default='visualize', 
+                       choices=['visualize', 'test'],
+                       help='Mode: visualize ou test')
+    parser.add_argument('--n_tests', type=int, default=100,
+                       help='Nombre de tests')
+    parser.add_argument('--n_steps', type=int, default=60,
+                       help='Nombre de pas')
     
-    # Sauvegarder les données simulées si nécessaire
-    # Créer le dossier sample s'il n'existe pas
+    args = parser.parse_args()
+    
     os.makedirs("../sample", exist_ok=True)
-    df_simulated.to_csv("../sample/garch_simulated_samples.csv")
-    print("Données simulées avec volatilité réalisée sauvegardées dans ../sample/garch_simulated_samples.csv")
+    
+    if args.mode == 'visualize':
+        sample_and_visualize_garch()
+    elif args.mode == 'test':
+        data_path = '../data/raw/BTCUSDT_1m_train_2023-01-01_to_2023-12-31.csv'
+        data = pd.read_csv(data_path, index_col=0, parse_dates=True)
+        results = run_test_mode(data, n_tests=args.n_tests, n_steps=args.n_steps)
