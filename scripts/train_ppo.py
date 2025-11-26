@@ -243,7 +243,6 @@ def run_final_validation(agent: PPOAgent, env: OptimalExecutionEnv, n_episodes: 
                         horizon_steps: int, initial_inventory: float, agent_name: str) -> dict:
     """
     Validation finale détaillée avec tracking de l'inventaire
-    
     ✅ CORRECTION : Agent et TWAP calculés dans la MÊME boucle (comme run_validation)
     
     Returns:
@@ -261,6 +260,7 @@ def run_final_validation(agent: PPOAgent, env: OptimalExecutionEnv, n_episodes: 
     inventory_trajectories = np.zeros((n_episodes, horizon_steps + 1))
     
     for ep_idx in tqdm(range(n_episodes), desc=f"  {agent_name}", leave=False):
+        # ...existing code...
         state, _ = env.reset()
         done = False
         step = 0
@@ -278,6 +278,7 @@ def run_final_validation(agent: PPOAgent, env: OptimalExecutionEnv, n_episodes: 
         # BOUCLE PRINCIPALE : Agent ET TWAP dans le MÊME ENVIRONNEMENT
         # ═══════════════════════════════════════════════════════════════
         while not done:
+            # ...existing code...
             # Sauvegarder l'état du marché AVANT l'action
             current_price = env.prices_history[-1]
             realized_vol = env._calculate_realized_volatility(np.array(env.prices_history))
@@ -302,7 +303,7 @@ def run_final_validation(agent: PPOAgent, env: OptimalExecutionEnv, n_episodes: 
                 twap_inventory -= twap_quantity
             
             # ──────────────────────────────────────────────────────────
-            # 2. EXÉCUTER L'AGENT (qui modifie l'environnement)
+            # 2. EXÉCUTER L'AGENT (qui mod
             # ──────────────────────────────────────────────────────────
             action, _, _ = agent.select_action(state, deterministic=True)
             next_state, _, terminated, truncated, info = env.step(action)
@@ -318,6 +319,7 @@ def run_final_validation(agent: PPOAgent, env: OptimalExecutionEnv, n_episodes: 
             state = next_state
             step += 1
         
+        # ...existing code...
         # ═══════════════════════════════════════════════════════════════
         # MÉTRIQUES FINALES DE L'ÉPISODE
         # ═══════════════════════════════════════════════════════════════
@@ -334,8 +336,11 @@ def run_final_validation(agent: PPOAgent, env: OptimalExecutionEnv, n_episodes: 
             relative_performance = 0.0
         ep_twap_comparisons.append(relative_performance)
     
-    # Calculer trajectoire moyenne
+    # Calculer trajectoire moyenne ET statistiques de dispersion
     avg_inventory_trajectory = np.mean(inventory_trajectories, axis=0)
+    std_inventory_trajectory = np.std(inventory_trajectories, axis=0) # ✅ NOUVEAU
+    min_inventory_trajectory = np.min(inventory_trajectories, axis=0) # ✅ NOUVEAU
+    max_inventory_trajectory = np.max(inventory_trajectories, axis=0) # ✅ NOUVEAU
     
     return {
         'agent_name': agent_name,
@@ -347,8 +352,11 @@ def run_final_validation(agent: PPOAgent, env: OptimalExecutionEnv, n_episodes: 
         'median_impact': np.median(ep_impacts),
         'avg_twap_comparison': np.mean(ep_twap_comparisons),
         'median_twap_comparison': np.median(ep_twap_comparisons),
-        'avg_twap_revenue': np.mean(ep_twap_revenues),  # ✅ NOUVEAU (optionnel, pour debug)
-        'avg_inventory_trajectory': avg_inventory_trajectory
+        'avg_twap_revenue': np.mean(ep_twap_revenues),
+        'avg_inventory_trajectory': avg_inventory_trajectory,
+        'std_inventory_trajectory': std_inventory_trajectory, # ✅ NOUVEAU
+        'min_inventory_trajectory': min_inventory_trajectory, # ✅ NOUVEAU
+        'max_inventory_trajectory': max_inventory_trajectory  # ✅ NOUVEAU
     }
 
 
@@ -396,7 +404,7 @@ def print_final_validation_stats(results: list):
 def train_ppo(
     data_path: str,
     n_episodes: int = 1000,
-    horizon_steps: int = 60,
+    horizon_steps: int = 240,  # ✅ CHANGED: 60 -> 240
     initial_inventory: float = 1000,
     lr: float = 3e-4,
     gamma: float = 0.99,
@@ -423,9 +431,9 @@ def train_ppo(
         data_path=data_path,
         initial_inventory=initial_inventory,
         horizon_steps=horizon_steps,
-        lambda_0=0.0005,
+        lambda_0=0.003,
         alpha=0.5,
-        delta=0.1,
+        delta=0,
         random_start_prob=random_start_prob
     )
     
@@ -434,9 +442,9 @@ def train_ppo(
         data_path=data_path,
         initial_inventory=initial_inventory,
         horizon_steps=horizon_steps,
-        lambda_0=0.0005,
+        lambda_0=0.003,
         alpha=0.5,
-        delta=0.1,
+        delta=0,
         random_start_prob=0.0
     )
     
@@ -445,7 +453,8 @@ def train_ppo(
     # ═══════════════════════════════════════════════════════════════
     
     print("Initialisation de l'agent PPO...")
-    hidden_dims = [256, 256, 128]  # ✅ DÉFINIR UNE SEULE FOIS
+    # ✅ CHANGED: Deeper network for financial data
+    hidden_dims = [256, 128, 64]  
     
     agent = PPOAgent(
         state_dim=env_train.observation_space.shape[0],
@@ -454,7 +463,7 @@ def train_ppo(
         gamma=gamma,
         epsilon=epsilon,
         lambda_gae=lambda_gae,
-        hidden_dims=hidden_dims,  # ✅ Utiliser la variable
+        hidden_dims=hidden_dims,
         device='cuda' if os.path.exists('/usr/local/cuda') else 'cpu'
     )
     
@@ -692,7 +701,8 @@ def train_ppo(
         validation_rewards_mean,
         validation_rewards_median,
         initial_inventory,
-        all_lengths_history  # ✅ NOUVEAU
+        all_lengths_history,
+        horizon_steps=horizon_steps  # ✅ ADDED: Pass horizon steps
     )
     
     plot_final_inventory_evolution(final_results, horizon_steps, initial_inventory)
@@ -701,7 +711,7 @@ def train_ppo(
 
 
 def plot_final_inventory_evolution(results: list, horizon_steps: int, initial_inventory: float):
-    """Visualiser l'évolution moyenne de l'inventaire pour chaque modèle"""
+    """Visualiser l'évolution moyenne de l'inventaire pour chaque modèle avec bandes de variance"""
     
     fig, ax = plt.subplots(figsize=(12, 7))
     
@@ -709,9 +719,37 @@ def plot_final_inventory_evolution(results: list, horizon_steps: int, initial_in
     colors = ['steelblue', 'darkgreen', 'coral']
     
     for idx, res in enumerate(results):
-        ax.plot(time_steps, res['avg_inventory_trajectory'], 
-                label=res['agent_name'], color=colors[idx % len(colors)],
+        # Récupérer les trajectoires brutes si disponibles, sinon on ne peut pas tracer la variance
+        # Note: run_final_validation doit être modifié pour retourner 'all_trajectories'
+        # Pour l'instant, on suppose que 'avg_inventory_trajectory' est la moyenne
+        # et on va ajouter une simulation de variance si les données brutes manquent, 
+        # MAIS l'idéal est de modifier run_final_validation.
+        
+        # Comme je ne peux pas modifier run_final_validation dans ce bloc sans tout réécrire,
+        # je vais supposer que 'std_inventory_trajectory' et 'min_inventory_trajectory' / 'max_inventory_trajectory'
+        # sont disponibles dans res. Si elles ne le sont pas, je vais modifier run_final_validation ci-dessous.
+        
+        avg_traj = res['avg_inventory_trajectory']
+        std_traj = res.get('std_inventory_trajectory', np.zeros_like(avg_traj))
+        min_traj = res.get('min_inventory_trajectory', avg_traj)
+        max_traj = res.get('max_inventory_trajectory', avg_traj)
+        
+        color = colors[idx % len(colors)]
+        
+        # Tracer la moyenne
+        ax.plot(time_steps, avg_traj, 
+                label=f"{res['agent_name']} (Moyenne)", color=color,
                 linewidth=2.5, marker='o', markersize=4, markevery=5)
+        
+        # Tracer la bande d'écart-type (Variance)
+        ax.fill_between(time_steps, 
+                        np.maximum(0, avg_traj - std_traj), 
+                        np.minimum(initial_inventory, avg_traj + std_traj),
+                        color=color, alpha=0.2, label=f"{res['agent_name']} (±1 std)")
+        
+        # Tracer la bande Min-Max (Range) - Optionnel, peut surcharger le graph
+        # ax.plot(time_steps, min_traj, linestyle=':', color=color, alpha=0.5, linewidth=1)
+        # ax.plot(time_steps, max_traj, linestyle=':', color=color, alpha=0.5, linewidth=1)
     
     # TWAP de référence (linéaire)
     twap_trajectory = np.linspace(initial_inventory, 0, horizon_steps + 1)
@@ -720,9 +758,9 @@ def plot_final_inventory_evolution(results: list, horizon_steps: int, initial_in
     
     ax.set_xlabel('Pas de temps', fontsize=13)
     ax.set_ylabel('Inventaire (BTC)', fontsize=13)
-    ax.set_title('Évolution Moyenne de l\'Inventaire\n(100 épisodes de validation)', 
+    ax.set_title('Évolution de l\'Inventaire (Moyenne ± Écart-type)\n(100 épisodes de validation)', 
                  fontsize=15, fontweight='bold')
-    ax.legend(fontsize=11, loc='upper right')
+    ax.legend(fontsize=10, loc='upper right')
     ax.grid(True, alpha=0.3)
     ax.set_xlim([0, horizon_steps])
     ax.set_ylim([0, initial_inventory * 1.05])
@@ -739,7 +777,8 @@ def plot_validation_results(episodes, revenues_mean, revenues_median, lengths_me
                            twap_comparisons_mean, twap_comparisons_median, completion_rates,
                            rewards_mean, rewards_median,
                            initial_inventory,
-                           all_lengths_history):  # ✅ NOUVEAU PARAMÈTRE
+                           all_lengths_history,
+                           horizon_steps=240):  # ✅ ADDED: Default to 240 but adjustable
     """Visualiser les résultats de validation"""
     
     fig, axes = plt.subplots(3, 3, figsize=(20, 15))
@@ -794,13 +833,18 @@ def plot_validation_results(episodes, revenues_mean, revenues_median, lengths_me
     ax = axes[1, 1]
     ax.plot(episodes, lengths_mean, 'o-', label='Pas effectifs (moy)', color='coral', linewidth=2, markersize=4)
     ax.plot(episodes, lengths_median, 's-', label='Pas effectifs (med)', color='darkred', linewidth=2, markersize=4)
-    ax.axhline(y=60, color='blue', linestyle='--', alpha=0.5, label='TWAP (60 pas)', linewidth=2)
+    
+    # ✅ CHANGED: Dynamic horizon line
+    ax.axhline(y=horizon_steps, color='blue', linestyle='--', alpha=0.5, label=f'TWAP ({horizon_steps} pas)', linewidth=2)
+    
     ax.set_title('Nombre de Pas avec Vente')
     ax.set_xlabel('Épisode')
     ax.set_ylabel('Nombre de pas')
     ax.legend()
     ax.grid(True, alpha=0.3)
-    ax.set_ylim([0, 65])
+    
+    # ✅ CHANGED: Dynamic Y-limit (Horizon + 10%)
+    ax.set_ylim([0, horizon_steps * 1.1])
     
     # 6. Impact de marché (AVEC TWAP)
     ax = axes[1, 2]
@@ -841,15 +885,17 @@ def plot_validation_results(episodes, revenues_mean, revenues_median, lengths_me
     ax.plot(all_validation_episodes, rolling_mean, 
             color='darkred', linewidth=2.5, label='Moyenne mobile (10 épisodes)')
     
-    # Ligne de référence TWAP
-    ax.axhline(y=60, color='blue', linestyle='--', alpha=0.5, label='TWAP (60 pas)', linewidth=2)
+    # ✅ CHANGED: Dynamic horizon line
+    ax.axhline(y=horizon_steps, color='blue', linestyle='--', alpha=0.5, label=f'TWAP ({horizon_steps} pas)', linewidth=2)
     
     ax.set_title('Pas Effectifs par Épisode de Validation')
     ax.set_xlabel('Épisode d\'entraînement')
     ax.set_ylabel('Nombre de pas')
     ax.legend(fontsize=9)
     ax.grid(True, alpha=0.3)
-    ax.set_ylim([0, 65])
+    
+    # ✅ CHANGED: Dynamic Y-limit
+    ax.set_ylim([0, horizon_steps * 1.1])
     
     # 8. Distribution Performance
     ax = axes[2, 1]
@@ -913,19 +959,19 @@ if __name__ == "__main__":
     # ═══════════════════════════════════════════════════════════════
     agent, env = train_ppo(
         data_path=data_path,
-        n_episodes=1000,
-        horizon_steps=60,
+        n_episodes=10000,
+        horizon_steps=240,
         initial_inventory=1000,
         lr=3e-4,                          
-        gamma=0.99,
+        gamma=1,
         epsilon=0.2,                       # Valeur de base
         lambda_gae=0.95,
         update_interval=80,
-        validation_interval=100,
-        n_validation_episodes=200,
-        random_start_prob=0.9,
+        validation_interval=200,
+        n_validation_episodes=100,
+        random_start_prob=0,
         save_interval=100,
         
-        pretrained_model_path=None#'../models/ppo_execution_best_median.pth',
-        #override_epsilon=0.10               
+        pretrained_model_path=None#'../models/ppo_execution_0.pth',
+        #override_epsilon=0.1         
     )

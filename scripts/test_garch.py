@@ -3,6 +3,8 @@ import os
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+import seaborn as sns
+from scipy import stats
 from datetime import datetime, timedelta
 import argparse
 from tqdm import tqdm
@@ -15,6 +17,9 @@ from src.environment.garch_simulator import (
     calibrate_full_model
 )
 
+# Set style for better plots
+plt.style.use('seaborn-v0_8-darkgrid')
+sns.set_context("paper", font_scale=1.2)
 
 def calculate_realized_volatility(prices, window=20):
     """Calcule la volatilité réalisée"""
@@ -32,7 +37,6 @@ def calculate_realized_volatility(prices, window=20):
     
     return volatility
 
-
 def compute_statistics(simulated_data, real_data):
     """Calcule les statistiques comparatives"""
     mean_real = np.mean(real_data)
@@ -41,7 +45,7 @@ def compute_statistics(simulated_data, real_data):
     
     eps = 1e-10
     
-    stats = {
+    stats_dict = {
         'mean_diff': np.abs(np.mean(simulated_data) - mean_real),
         'mean_rel_error': np.abs(np.mean(simulated_data) - mean_real) / (mean_real + eps) * 100,
         'median_diff': np.abs(np.median(simulated_data) - median_real),
@@ -54,11 +58,104 @@ def compute_statistics(simulated_data, real_data):
         'kurtosis_diff': np.abs(pd.Series(simulated_data).kurtosis() - pd.Series(real_data).kurtosis()),
     }
     
-    for key in stats:
+    for key in stats_dict:
         if 'rel_error' in key:
-            stats[key] = min(stats[key], 1000.0)
+            stats_dict[key] = min(stats_dict[key], 1000.0)
     
-    return stats
+    return stats_dict
+
+def plot_distributions_and_correlations(all_sim_returns, all_real_returns, 
+                                      all_sim_volumes, all_real_volumes,
+                                      all_sim_vols, all_real_vols):
+    """Génère des graphiques détaillés de distribution et corrélation"""
+    
+    print("\nGénération des graphiques de distribution et corrélation...")
+    
+    # 1. Distributions (Histograms + KDE)
+    fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+    fig.suptitle('Comparaison des Distributions: Réel vs Simulé', fontsize=16, fontweight='bold')
+    
+    # Returns
+    sns.histplot(all_real_returns, stat="density", bins=100, color="black", alpha=0.3, label="Réel", ax=axes[0,0], kde=True)
+    sns.histplot(all_sim_returns, stat="density", bins=100, color="blue", alpha=0.3, label="Simulé", ax=axes[0,0], kde=True)
+    axes[0,0].set_title("Distribution des Rendements (Log-Returns)")
+    axes[0,0].set_xlim([-0.01, 0.01]) # Zoom on center
+    axes[0,0].legend()
+
+    # Returns (Log Scale for Tails)
+    sns.histplot(all_real_returns, stat="density", bins=100, color="black", alpha=0.3, label="Réel", ax=axes[1,0], kde=False)
+    sns.histplot(all_sim_returns, stat="density", bins=100, color="blue", alpha=0.3, label="Simulé", ax=axes[1,0], kde=False)
+    axes[1,0].set_yscale('log')
+    axes[1,0].set_title("Queues de Distribution (Log Scale)")
+    axes[1,0].set_xlim([-0.02, 0.02])
+    
+    # Volumes
+    sns.histplot(all_real_volumes, stat="density", bins=50, color="black", alpha=0.3, label="Réel", ax=axes[0,1], kde=True)
+    sns.histplot(all_sim_volumes, stat="density", bins=50, color="orange", alpha=0.3, label="Simulé", ax=axes[0,1], kde=True)
+    axes[0,1].set_title("Distribution des Volumes")
+    axes[0,1].set_xlim([0, np.percentile(all_real_volumes, 99)]) # Ignore extreme outliers for plot
+    axes[0,1].legend()
+    
+    # Volatility
+    sns.histplot(all_real_vols, stat="density", bins=50, color="black", alpha=0.3, label="Réel", ax=axes[0,2], kde=True)
+    sns.histplot(all_sim_vols, stat="density", bins=50, color="green", alpha=0.3, label="Simulé", ax=axes[0,2], kde=True)
+    axes[0,2].set_title("Distribution de la Volatilité Réalisée")
+    axes[0,2].legend()
+    
+    # QQ Plot (Returns)
+    stats.probplot(all_real_returns, dist="norm", plot=axes[1,1])
+    axes[1,1].get_lines()[0].set_color('black')
+    axes[1,1].get_lines()[0].set_alpha(0.5)
+    axes[1,1].get_lines()[0].set_label('Réel')
+    
+    # Overlay Simulated QQ (Manual approximation for visual comparison)
+    # Note: stats.probplot doesn't support easy overlay, so we just plot Real QQ to check normality
+    # Ideally we want Sim QQ to match Real QQ.
+    axes[1,1].set_title("QQ-Plot (Réel vs Normal)")
+    
+    # Volume vs Volatility Correlation
+    # Sample 5000 points to avoid clutter
+    idx = np.random.choice(len(all_sim_volumes), min(5000, len(all_sim_volumes)), replace=False)
+    
+    axes[1,2].scatter(np.array(all_sim_vols)[idx], np.array(all_sim_volumes)[idx], alpha=0.1, color='blue', label='Simulé')
+    axes[1,2].set_title("Corrélation Volume vs Volatilité")
+    axes[1,2].set_xlabel("Volatilité")
+    axes[1,2].set_ylabel("Volume")
+    axes[1,2].set_xscale('log')
+    axes[1,2].set_yscale('log')
+    
+    plt.tight_layout()
+    plt.savefig('../sample/garch_distributions.png', dpi=150)
+    print("✓ Distributions sauvegardées: ../sample/garch_distributions.png")
+    plt.close()
+    
+    # 2. Autocorrelation Plot (Volatility Clustering)
+    fig, ax = plt.subplots(1, 1, figsize=(10, 6))
+    
+    # Calculate ACF for squared returns (proxy for volatility clustering)
+    max_lag = 50
+    
+    def get_acf(series, lags):
+        return [pd.Series(series).autocorr(lag=i) for i in range(lags)]
+    
+    real_sq_ret = np.array(all_real_returns)**2
+    sim_sq_ret = np.array(all_sim_returns)**2
+    
+    acf_real = get_acf(real_sq_ret, max_lag)
+    acf_sim = get_acf(sim_sq_ret, max_lag)
+    
+    ax.plot(range(max_lag), acf_real, label='Réel (Carré des rendements)', color='black', linewidth=2)
+    ax.plot(range(max_lag), acf_sim, label='Simulé (Carré des rendements)', color='blue', linestyle='--', linewidth=2)
+    
+    ax.set_title("Autocorrélation de la Volatilité (Clustering)")
+    ax.set_xlabel("Lag (minutes)")
+    ax.set_ylabel("Autocorrélation")
+    ax.legend()
+    
+    plt.tight_layout()
+    plt.savefig('../sample/garch_autocorr.png', dpi=150)
+    print("✓ Autocorrélation sauvegardée: ../sample/garch_autocorr.png")
+    plt.close()
 
 
 def run_test_mode(data, n_tests=100, n_steps=60):
@@ -67,7 +164,6 @@ def run_test_mode(data, n_tests=100, n_steps=60):
     print(f"MODE TEST: {n_tests} simulations de {n_steps} pas")
     print(f"{'='*80}\n")
     
-    # Calibrer les modèles GARCH et volume
     print("Calibration du modèle GARCH global...")
     garch_params, volume_params = calibrate_full_model(data)
     
@@ -76,8 +172,13 @@ def run_test_mode(data, n_tests=100, n_steps=60):
     all_volatility_stats = []
     all_returns_stats = []
     
-    all_sim_volumes = []
-    all_real_volumes = []
+    # Arrays for distribution plotting
+    dist_sim_returns = []
+    dist_real_returns = []
+    dist_sim_volumes = []
+    dist_real_volumes = []
+    dist_sim_vols = []
+    dist_real_vols = []
     
     n_failed = 0
     n_unstable = 0
@@ -102,7 +203,6 @@ def run_test_mode(data, n_tests=100, n_steps=60):
             local_volatility = np.sqrt(local_calibrator.results.conditional_volatility.iloc[-1]**2)
             local_volatility = min(local_volatility, 0.1)
             
-            # Créer le simulateur avec modèle volume
             simulator = GarchSimulator(local_params, random_price, local_volatility, volume_params)
             sim_prices, sim_vols, sim_volumes = simulator.simulate_path(n_steps)
             
@@ -114,14 +214,9 @@ def run_test_mode(data, n_tests=100, n_steps=60):
                 n_failed += 1
                 continue
             
-            # Données réelles
             real_prices = data['close'].iloc[random_idx:random_idx + n_steps + 1].values
             real_volumes = data['volume'].iloc[random_idx:random_idx + n_steps].values
             
-            all_sim_volumes.extend(sim_volumes)
-            all_real_volumes.extend(real_volumes)
-            
-            # Calculs
             sim_returns = np.diff(np.log(sim_prices))
             real_returns = np.diff(np.log(real_prices))
             
@@ -131,6 +226,14 @@ def run_test_mode(data, n_tests=100, n_steps=60):
             
             sim_realized_vol = calculate_realized_volatility(sim_prices)
             real_realized_vol = calculate_realized_volatility(real_prices)
+            
+            # Collect data for distributions
+            dist_sim_returns.extend(sim_returns)
+            dist_real_returns.extend(real_returns)
+            dist_sim_volumes.extend(sim_volumes)
+            dist_real_volumes.extend(real_volumes)
+            dist_sim_vols.extend(sim_realized_vol[1:])
+            dist_real_vols.extend(real_realized_vol[1:])
             
             price_stats = compute_statistics(sim_prices, real_prices)
             volume_stats = compute_statistics(sim_volumes, real_volumes)
@@ -197,33 +300,14 @@ def run_test_mode(data, n_tests=100, n_steps=60):
     print_aggregated_stats(all_volatility_stats, "VOLATILITÉ RÉALISÉE")
     print_aggregated_stats(all_returns_stats, "RENDEMENTS")
     
-    # Statistiques volumes
-    print("\n" + "="*80)
-    print("STATISTIQUES DÉTAILLÉES DES VOLUMES")
-    print("="*80)
-    
-    all_sim_volumes = np.array(all_sim_volumes)
-    all_real_volumes = np.array(all_real_volumes)
-    
-    print("\nVolumes réels:")
-    print(f"  Moyenne: {np.mean(all_real_volumes):.2f}")
-    print(f"  Médiane: {np.median(all_real_volumes):.2f}")
-    print(f"  Écart-type: {np.std(all_real_volumes):.2f}")
-    print(f"  Min: {np.min(all_real_volumes):.2f}")
-    print(f"  Max: {np.max(all_real_volumes):.2f}")
-    
-    print("\nVolumes simulés:")
-    print(f"  Moyenne: {np.mean(all_sim_volumes):.2f}")
-    print(f"  Médiane: {np.median(all_sim_volumes):.2f}")
-    print(f"  Écart-type: {np.std(all_sim_volumes):.2f}")
-    print(f"  Min: {np.min(all_sim_volumes):.2f}")
-    print(f"  Max: {np.max(all_sim_volumes):.2f}")
-    
-    print("\nDifférence relative:")
-    print(f"  Moyenne: {(np.mean(all_sim_volumes) - np.mean(all_real_volumes)) / np.mean(all_real_volumes) * 100:.2f}%")
-    print(f"  Écart-type: {(np.std(all_sim_volumes) - np.std(all_real_volumes)) / np.std(all_real_volumes) * 100:.2f}%")
-    
     create_summary_plot(all_price_stats, all_volume_stats, all_volatility_stats, all_returns_stats)
+    
+    # Generate Distribution Plots
+    plot_distributions_and_correlations(
+        dist_sim_returns, dist_real_returns,
+        dist_sim_volumes, dist_real_volumes,
+        dist_sim_vols, dist_real_vols
+    )
     
     return {
         'price_stats': all_price_stats,
@@ -231,7 +315,6 @@ def run_test_mode(data, n_tests=100, n_steps=60):
         'volatility_stats': all_volatility_stats,
         'returns_stats': all_returns_stats
     }
-
 
 def create_summary_plot(price_stats, volume_stats, volatility_stats, returns_stats):
     """Crée un graphique récapitulatif"""
@@ -274,7 +357,6 @@ def create_summary_plot(price_stats, volume_stats, volatility_stats, returns_sta
     print("\n✓ Graphique sauvegardé: ../sample/garch_test_summary.png")
     plt.close()
 
-
 def sample_and_visualize_garch():
     """Mode visualisation"""
     print("Chargement des données...")
@@ -314,6 +396,9 @@ def sample_and_visualize_garch():
     real_trajectory = data['close'].iloc[random_idx:random_idx + n_steps + 1].values
     real_volume_trajectory = data['volume'].iloc[random_idx:random_idx + n_steps].values
     
+    # Calculer la volatilité réalisée sur la trajectoire réelle
+    real_volatility = calculate_realized_volatility(real_trajectory)
+    
     # Graphiques
     fig, axs = plt.subplots(3, 1, figsize=(15, 15))
     
@@ -326,7 +411,11 @@ def sample_and_visualize_garch():
     
     for i in range(n_simulations):
         axs[1].plot(simulated_vols[i], label=f'Vol Sim {i+1}', alpha=0.7)
-    axs[1].set_title('Volatilité GARCH')
+    
+    # Ajouter la courbe de volatilité réelle
+    axs[1].plot(real_volatility, '--', label='Réel (Réalisée)', color='black', linewidth=2)
+    
+    axs[1].set_title('Volatilité GARCH vs Réalisée')
     axs[1].set_ylabel('Volatilité')
     axs[1].legend()
     
@@ -343,15 +432,14 @@ def sample_and_visualize_garch():
     print("\n✓ Visualisation sauvegardée: ../sample/garch_simulation.png")
     plt.show()
 
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Test du simulateur GARCH')
     parser.add_argument('--mode', type=str, default='visualize', 
                        choices=['visualize', 'test'],
                        help='Mode: visualize ou test')
-    parser.add_argument('--n_tests', type=int, default=100,
+    parser.add_argument('--n_tests', type=int, default=1000,
                        help='Nombre de tests')
-    parser.add_argument('--n_steps', type=int, default=60,
+    parser.add_argument('--n_steps', type=int, default=240,
                        help='Nombre de pas')
     
     args = parser.parse_args()

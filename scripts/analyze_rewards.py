@@ -325,8 +325,8 @@ Total pas:      {len(self.step_rewards)}
 def mini_training_with_reward_analysis(
     data_path: str,
     n_episodes: int = 100,
-    analyze_every: int = 20,
-    horizon_steps: int = 60,
+    analyze_every: int = 80,
+    horizon_steps: int = 240,
     initial_inventory: float = 1000
 ):
     """
@@ -355,9 +355,9 @@ def mini_training_with_reward_analysis(
         data_path=data_path,
         initial_inventory=initial_inventory,
         horizon_steps=horizon_steps,
-        lambda_0=0.0005,
+        lambda_0=0.004,
         alpha=0.5,
-        delta=0.2,
+        delta=0,
         random_start_prob=0
     )
     
@@ -367,10 +367,10 @@ def mini_training_with_reward_analysis(
         state_dim=env.observation_space.shape[0],
         action_dim=env.action_space.n,
         lr=3e-4,
-        gamma=0.99,
-        epsilon=0.3,
+        gamma=1,
+        epsilon=0.2,
         lambda_gae=0.95,
-        hidden_dims=[256, 256, 128],
+        hidden_dims=[256, 128, 64],
         device='cpu'
     )
     
@@ -731,7 +731,7 @@ if __name__ == "__main__":
         data_path=data_path,
         n_episodes=1000,
         analyze_every=100,
-        horizon_steps=60,
+        horizon_steps=240,
         initial_inventory=1000
     )
     """
