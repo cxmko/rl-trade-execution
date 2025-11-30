@@ -15,17 +15,40 @@ from src.environment.execution_env import OptimalExecutionEnv
 from src.models.ppo_agent import PPOAgent
 
 
+def evaluate_targeted_robustness(agent_revenues, twap_revenues, initial_inventory_value):
+    """
+    CVaR and Win Rate evaluated ONLY on episodes where TWAP <= Initial Price.
+    (Excludes 'Easy' Bull Markets).
+    """
+    agent_revenues = np.array(agent_revenues)
+    twap_revenues = np.array(twap_revenues)
+    
+    # Filter: Keep only 'Bear/Flat' markets
+    relevant_mask = twap_revenues <= initial_inventory_value
+    
+    # Calculate Alpha (Agent - TWAP) on filtered data
+    filtered_excess = (agent_revenues - twap_revenues)[relevant_mask]
+    
+    if len(filtered_excess) == 0:
+        return 0.0, 0.0 # No downside scenarios found
+        
+    # CVaR @ 5%
+    sorted_alpha = np.sort(filtered_excess)
+    cutoff_idx = int(len(sorted_alpha) * 0.05)
+    cvar_5 = sorted_alpha[0] if cutoff_idx == 0 else np.mean(sorted_alpha[:cutoff_idx])
+    
+    # Win Rate
+    win_rate = np.mean(filtered_excess > 0) * 100
+    
+    return cvar_5, win_rate
 
 def run_validation(agent: PPOAgent, env: OptimalExecutionEnv, n_episodes: int, 
-                   horizon_steps: int, initial_inventory: float,
-                   debug_mode: bool = False) -> dict:
+                   horizon_steps: int, initial_inventory: float) -> dict:
     """
     Exécute une boucle de validation propre sans entraînement
-    
-    ✅ CORRECTION FINALE : Agent et TWAP calculés dans la MÊME boucle
     """
     ep_revenues = []
-    ep_lengths = []  # ✅ Liste complète pour min/max
+    ep_lengths = []
     ep_impacts = []
     ep_inv_remaining = []
     ep_prices = []
@@ -34,6 +57,14 @@ def run_validation(agent: PPOAgent, env: OptimalExecutionEnv, n_episodes: int,
     ep_twap_comparisons = []
     ep_rewards = []
     
+    # ✅ NEW METRICS LISTS
+    ep_vwap_agent = []      # Volume Weighted Average Price (Agent)
+    ep_vwap_twap = []       # Volume Weighted Average Price (TWAP)
+    ep_impact_std = []      # Standard deviation of impact (Volatility of execution)
+    ep_twap_impact_std = [] # Standard deviation of TWAP impact
+    ep_timing_bias = []     # Center of mass of execution time (0=Start, 0.5=Middle, 1=End)
+    ep_twap_timing_bias = [] # Center of mass for TWAP
+    
     for ep_idx in tqdm(range(n_episodes), desc="Validation", leave=False):
         state, _ = env.reset()
         done = False
@@ -41,18 +72,20 @@ def run_validation(agent: PPOAgent, env: OptimalExecutionEnv, n_episodes: int,
         effective_steps = 0
         episode_impacts_local = []
         episode_prices_local = []
+        episode_volumes_local = [] # Track volume per step for VWAP
         episode_reward_total = 0.0
         
         twap_inventory = initial_inventory
         twap_total_revenue = 0.0
         twap_impacts_local = []
         
-        if debug_mode:
-            episode_step_rewards = []
-            episode_agent_revenues = []
-            episode_twap_revenues_steps = []
-            episode_normalizers = []
-            episode_relative_gains = []
+        # Track execution times for Center of Mass
+        execution_times = []
+        execution_quantities = []
+        
+        # Track TWAP execution for Center of Mass
+        twap_execution_times = []
+        twap_execution_quantities = []
         
         while not done:
             current_price = env.prices_history[-1]
@@ -61,6 +94,7 @@ def run_validation(agent: PPOAgent, env: OptimalExecutionEnv, n_episodes: int,
             rolling_volume = env._calculate_rolling_mean(env.volumes_history, env.vol_window)
             time_remaining = env.horizon_steps - env.current_step
             
+            # TWAP Logic
             if time_remaining > 0 and twap_inventory > 1e-6:
                 twap_quantity = twap_inventory / time_remaining
                 twap_quantity = min(twap_quantity, twap_inventory)
@@ -74,33 +108,37 @@ def run_validation(agent: PPOAgent, env: OptimalExecutionEnv, n_episodes: int,
                 twap_total_revenue += twap_revenue_step
                 twap_inventory -= twap_quantity
                 twap_impacts_local.append(twap_impact * 10000)
+                
+                twap_execution_times.append(step)
+                twap_execution_quantities.append(twap_quantity)
             else:
                 twap_revenue_step = 0.0
             
+            # Agent Logic
             action, _, _ = agent.select_action(state, deterministic=True)
             next_state, reward, terminated, truncated, info = env.step(action)
             done = terminated or truncated
             
             episode_reward_total += reward
             
-            if debug_mode:
-                episode_step_rewards.append(reward)
-                episode_agent_revenues.append(info.get('agent_revenue', 0.0))
-                episode_twap_revenues_steps.append(twap_revenue_step)
-                episode_normalizers.append(info.get('normalizer', 1.0))
-                episode_relative_gains.append(info.get('relative_gain', 0.0))
-            
-            if info['quantity_sold'] > 1e-6:
+            # ✅ CAPTURE EXECUTION DATA
+            qty_sold = info['quantity_sold']
+            if qty_sold > 1e-6:
                 effective_steps += 1
                 episode_impacts_local.append(info['temp_impact_relative'] * 10000)
                 episode_prices_local.append(info['execution_price'])
+                episode_volumes_local.append(qty_sold)
+                
+                # For Timing Bias
+                execution_times.append(step)
+                execution_quantities.append(qty_sold)
             
             state = next_state
             step += 1
         
         agent_revenue = info['total_revenue']
         ep_revenues.append(agent_revenue)
-        ep_lengths.append(effective_steps)  # ✅ Stocker pour chaque épisode
+        ep_lengths.append(effective_steps)
         ep_impacts.append(np.mean(episode_impacts_local) if episode_impacts_local else 0)
         ep_inv_remaining.append(info['inventory_remaining'])
         ep_prices.append(np.mean(episode_prices_local) if episode_prices_local else env.initial_price)
@@ -115,97 +153,75 @@ def run_validation(agent: PPOAgent, env: OptimalExecutionEnv, n_episodes: int,
             relative_performance = 0.0
         ep_twap_comparisons.append(relative_performance)
         
-        if debug_mode:
-            sign_reward = np.sign(episode_reward_total)
-            sign_perf = np.sign(relative_performance)
+        # ✅ CALCULATE ADVANCED METRICS
+        
+        # 1. VWAP (Volume Weighted Average Price)
+        total_vol_agent = sum(episode_volumes_local)
+        if total_vol_agent > 0:
+            vwap_agent = sum(p * v for p, v in zip(episode_prices_local, episode_volumes_local)) / total_vol_agent
+        else:
+            vwap_agent = 0
+        ep_vwap_agent.append(vwap_agent)
+        
+        # 2. TWAP VWAP (Approximate)
+        if initial_inventory > 0:
+            vwap_twap = twap_total_revenue / initial_inventory
+        else:
+            vwap_twap = 0
+        ep_vwap_twap.append(vwap_twap)
+        
+        # 3. Impact Volatility (Square Root Fallacy Detector)
+        if episode_impacts_local:
+            ep_impact_std.append(np.std(episode_impacts_local))
+        else:
+            ep_impact_std.append(0)
             
-            if sign_reward != sign_perf and abs(episode_reward_total) > 0.1:
-                total_agent_revenue = sum(episode_agent_revenues)
-                total_twap_revenue = sum(episode_twap_revenues_steps)
-                
-                print(f"\n{'🚨'*50}")
-                print(f"INCOHÉRENCE DÉTECTÉE EN VALIDATION - ÉPISODE {ep_idx + 1}/{n_episodes}")
-                print(f"{'🚨'*50}\n")
-                
-                print(f"📊 MÉTRIQUES GLOBALES:")
-                print(f"  Récompense totale:           {episode_reward_total:>15.4f} → signe: {'+' if sign_reward > 0 else '-' if sign_reward < 0 else '0'}")
-                print(f"  Revenu Agent (total):        {agent_revenue:>15,.2f} USDT")
-                print(f"  Revenu TWAP (total):         {twap_total_revenue:>15,.2f} USDT")
-                print(f"  Différence:                  {agent_revenue - twap_total_revenue:>15,.2f} USDT")
-                print(f"  Performance vs TWAP:         {relative_performance:>15.4f} % → signe: {'+' if sign_perf > 0 else '-' if sign_perf < 0 else '0'}")
-                
-                print(f"\n  📌 DÉTAIL DES REVENUS STEP-BY-STEP:")
-                print(f"     Agent revenue (sum steps):  {total_agent_revenue:>15,.2f} USDT")
-                print(f"     TWAP revenue (sum steps):   {total_twap_revenue:>15,.2f} USDT")
-                print(f"     Diff step-by-step:          {total_agent_revenue - total_twap_revenue:>15,.2f} USDT")
-                
-                print(f"\n❌ INCOHÉRENCE : Récompense ({'+' if sign_reward > 0 else '-' if sign_reward < 0 else '0'}) ≠ Performance ({'+' if sign_perf > 0 else '-' if sign_perf < 0 else '0'})")
-                
-                # Afficher détails (premiers/derniers pas)
-                print(f"\n{'─'*100}")
-                print(f"DÉTAILS DES TRANSACTIONS (premiers 5 et derniers 5 pas)")
-                print(f"{'─'*100}\n")
-                
-                n_steps = len(episode_step_rewards)
-                indices_to_show = list(range(min(5, n_steps))) + list(range(max(n_steps - 5, 5), n_steps))
-                
-                for idx in indices_to_show:
-                    if idx < 0 or idx >= n_steps:
-                        continue
-                    
-                    print(f"  Pas {idx + 1}/{n_steps}:")
-                    print(f"    Agent revenue:       {episode_agent_revenues[idx]:>15,.2f} USDT")
-                    print(f"    TWAP revenue:        {episode_twap_revenues_steps[idx]:>15,.2f} USDT")
-                    print(f"    Relative gain:       {episode_relative_gains[idx]:>15,.2f} USDT")
-                    print(f"    Normalizer:          {episode_normalizers[idx]:>15,.2f}")
-                    print(f"    Reward (final):      {episode_step_rewards[idx]:>15.6f}")
-                    print()
-                    
-                    if idx == 4 and n_steps > 10:
-                        print(f"  [...] (pas 6 à {n_steps - 5} omis)\n")
-                
-                print(f"\n{'🚨'*50}")
-                print(f"VALIDATION INTERROMPUE")
-                print(f"{'🚨'*50}\n")
-                
-                return {
-                    'avg_revenue': np.mean(ep_revenues) if ep_revenues else 0,
-                    'median_revenue': np.median(ep_revenues) if ep_revenues else 0,
-                    'avg_length': np.mean(ep_lengths) if ep_lengths else 0,
-                    'median_length': np.median(ep_lengths) if ep_lengths else 0,
-                    'min_length': np.min(ep_lengths) if ep_lengths else 0,  # ✅ NOUVEAU
-                    'max_length': np.max(ep_lengths) if ep_lengths else 0,  # ✅ NOUVEAU
-                    'all_lengths': ep_lengths,  # ✅ NOUVEAU : Pour le graphique
-                    'avg_impact': np.mean(ep_impacts) if ep_impacts else 0,
-                    'median_impact': np.median(ep_impacts) if ep_impacts else 0,
-                    'avg_inv_remaining': np.mean(ep_inv_remaining) if ep_inv_remaining else 0,
-                    'avg_price': np.mean(ep_prices) if ep_prices else 0,
-                    'completion_rate': 0,
-                    'avg_slippage_bps': 0,
-                    'avg_twap_revenue': np.mean(ep_twap_revenues) if ep_twap_revenues else 0,
-                    'median_twap_revenue': np.median(ep_twap_revenues) if ep_twap_revenues else 0,
-                    'avg_twap_impact': np.mean(ep_twap_impacts) if ep_twap_impacts else 0,
-                    'avg_twap_comparison': np.mean(ep_twap_comparisons) if ep_twap_comparisons else 0,
-                    'median_twap_comparison': np.median(ep_twap_comparisons) if ep_twap_comparisons else 0,
-                    'avg_reward': np.mean(ep_rewards) if ep_rewards else 0,
-                    'median_reward': np.median(ep_rewards) if ep_rewards else 0,
-                    'inconsistency_detected': True
-                }
+        if twap_impacts_local:
+            ep_twap_impact_std.append(np.std(twap_impacts_local))
+        else:
+            ep_twap_impact_std.append(0)
+            
+        # 4. Timing Bias (Center of Mass)
+        if sum(execution_quantities) > 0:
+            center_of_mass = np.average(execution_times, weights=execution_quantities)
+            normalized_bias = center_of_mass / horizon_steps
+            ep_timing_bias.append(normalized_bias)
+        else:
+            ep_timing_bias.append(0.5)
+            
+        if sum(twap_execution_quantities) > 0:
+            twap_center_of_mass = np.average(twap_execution_times, weights=twap_execution_quantities)
+            twap_normalized_bias = twap_center_of_mass / horizon_steps
+            ep_twap_timing_bias.append(twap_normalized_bias)
+        else:
+            ep_twap_timing_bias.append(0.5)
     
-    # Calculer les métriques finales
+    # ✅ NEW: Robustness Metrics
+    initial_value = initial_inventory * env.initial_price
+    robust_cvar, robust_win_rate = evaluate_targeted_robustness(
+        ep_revenues, ep_twap_revenues, initial_value
+    )
+    
+    # Calculate final metrics
     avg_revenue = np.mean(ep_revenues)
     median_revenue = np.median(ep_revenues)
     avg_length = np.mean(ep_lengths)
     median_length = np.median(ep_lengths)
-    min_length = np.min(ep_lengths)  # ✅ NOUVEAU
-    max_length = np.max(ep_lengths)  # ✅ NOUVEAU
+    min_length = np.min(ep_lengths)
+    max_length = np.max(ep_lengths)
+    
     avg_impact = np.mean(ep_impacts)
-    median_impact = np.median(ep_impacts)
+    median_impact = np.median(ep_impacts) # ✅ Added
+    
     avg_inv_remaining = np.mean(ep_inv_remaining)
     avg_price = np.mean(ep_prices)
+    
     avg_twap_revenue = np.mean(ep_twap_revenues)
     median_twap_revenue = np.median(ep_twap_revenues)
+    
     avg_twap_impact = np.mean(ep_twap_impacts)
+    median_twap_impact = np.median(ep_twap_impacts) # ✅ Added
+    
     avg_twap_comparison = np.mean(ep_twap_comparisons)
     median_twap_comparison = np.median(ep_twap_comparisons)
     avg_reward = np.mean(ep_rewards)
@@ -219,11 +235,26 @@ def run_validation(agent: PPOAgent, env: OptimalExecutionEnv, n_episodes: int,
         'median_revenue': median_revenue,
         'avg_length': avg_length,
         'median_length': median_length,
-        'min_length': min_length,  # ✅ NOUVEAU
-        'max_length': max_length,  # ✅ NOUVEAU
-        'all_lengths': ep_lengths,  # ✅ NOUVEAU : Liste complète pour graphique
+        'min_length': min_length,
+        'max_length': max_length,
+        'all_lengths': ep_lengths,
+        
         'avg_impact': avg_impact,
-        'median_impact': median_impact,
+        'median_impact': median_impact, # ✅ Added
+        
+        'avg_twap_impact': avg_twap_impact,
+        'median_twap_impact': median_twap_impact, # ✅ Added
+        
+        'impact_std': np.mean(ep_impact_std),
+        'twap_impact_std': np.mean(ep_twap_impact_std), # ✅ Added
+        
+        'avg_vwap_agent': np.mean(ep_vwap_agent),
+        'avg_vwap_twap': np.mean(ep_vwap_twap),
+        'vwap_diff_bps': (np.mean(ep_vwap_agent) - np.mean(ep_vwap_twap)) / np.mean(ep_vwap_twap) * 10000,
+        
+        'timing_bias': np.mean(ep_timing_bias),
+        'twap_timing_bias': np.mean(ep_twap_timing_bias), # ✅ Added
+        
         'avg_inv_remaining': avg_inv_remaining,
         'avg_price': avg_price,
         'completion_rate': completion_rate,
@@ -235,6 +266,8 @@ def run_validation(agent: PPOAgent, env: OptimalExecutionEnv, n_episodes: int,
         'median_twap_comparison': median_twap_comparison,
         'avg_reward': avg_reward,
         'median_reward': median_reward,
+        'robust_cvar': robust_cvar,
+        'robust_win_rate': robust_win_rate,
         'inconsistency_detected': False
     }
 
@@ -243,10 +276,6 @@ def run_final_validation(agent: PPOAgent, env: OptimalExecutionEnv, n_episodes: 
                         horizon_steps: int, initial_inventory: float, agent_name: str) -> dict:
     """
     Validation finale détaillée avec tracking de l'inventaire
-    ✅ CORRECTION : Agent et TWAP calculés dans la MÊME boucle (comme run_validation)
-    
-    Returns:
-        dict: Statistiques + trajectoires d'inventaire moyennes
     """
     print(f"\n🔍 Validation finale: {agent_name} ({n_episodes} épisodes)")
     
@@ -254,41 +283,47 @@ def run_final_validation(agent: PPOAgent, env: OptimalExecutionEnv, n_episodes: 
     ep_lengths = []
     ep_impacts = []
     ep_twap_comparisons = []
-    ep_twap_revenues = []  # ✅ NOUVEAU
+    ep_twap_revenues = []
+    
+    # ✅ NEW: Detailed Metrics Tracking
+    ep_vwap_diffs = []
+    ep_timing_bias = []
+    ep_twap_timing_bias = []
+    ep_twap_impacts = []
     
     # Trajectoires d'inventaire (matrice: n_episodes × horizon_steps)
     inventory_trajectories = np.zeros((n_episodes, horizon_steps + 1))
     
     for ep_idx in tqdm(range(n_episodes), desc=f"  {agent_name}", leave=False):
-        # ...existing code...
         state, _ = env.reset()
         done = False
         step = 0
         effective_steps = 0
         episode_impacts_local = []
+        episode_prices_local = []
+        episode_volumes_local = []
+        
+        # Track execution times for Center of Mass
+        execution_times = []
+        execution_quantities = []
         
         # Stocker inventaire initial
         inventory_trajectories[ep_idx, 0] = initial_inventory
         
-        # ✅ NOUVEAU : Variables pour TWAP calculé en parallèle
         twap_inventory = initial_inventory
         twap_total_revenue = 0.0
+        twap_impacts_local = []
+        twap_execution_times = []
+        twap_execution_quantities = []
         
-        # ═══════════════════════════════════════════════════════════════
-        # BOUCLE PRINCIPALE : Agent ET TWAP dans le MÊME ENVIRONNEMENT
-        # ═══════════════════════════════════════════════════════════════
         while not done:
-            # ...existing code...
-            # Sauvegarder l'état du marché AVANT l'action
             current_price = env.prices_history[-1]
             realized_vol = env._calculate_realized_volatility(np.array(env.prices_history))
             rolling_sigma = env._calculate_rolling_mean(env.realized_vols_history, env.vol_window)
             rolling_volume = env._calculate_rolling_mean(env.volumes_history, env.vol_window)
             time_remaining = env.horizon_steps - env.current_step
             
-            # ──────────────────────────────────────────────────────────
-            # 1. CALCULER L'ACTION TWAP (AVANT que l'agent n'agisse)
-            # ──────────────────────────────────────────────────────────
+            # 1. CALCULER L'ACTION TWAP
             if time_remaining > 0 and twap_inventory > 1e-6:
                 twap_quantity = twap_inventory / time_remaining
                 twap_quantity = min(twap_quantity, twap_inventory)
@@ -301,10 +336,13 @@ def run_final_validation(agent: PPOAgent, env: OptimalExecutionEnv, n_episodes: 
                 
                 twap_total_revenue += twap_revenue_step
                 twap_inventory -= twap_quantity
+                
+                # ✅ FIX: Track TWAP metrics inside the loop
+                twap_impacts_local.append(twap_impact * 10000)
+                twap_execution_times.append(step)
+                twap_execution_quantities.append(twap_quantity)
             
-            # ──────────────────────────────────────────────────────────
-            # 2. EXÉCUTER L'AGENT (qui mod
-            # ──────────────────────────────────────────────────────────
+            # 2. EXÉCUTER L'AGENT
             action, _, _ = agent.select_action(state, deterministic=True)
             next_state, _, terminated, truncated, info = env.step(action)
             done = terminated or truncated
@@ -312,51 +350,106 @@ def run_final_validation(agent: PPOAgent, env: OptimalExecutionEnv, n_episodes: 
             if info['quantity_sold'] > 1e-6:
                 effective_steps += 1
                 episode_impacts_local.append(info['temp_impact_relative'] * 10000)
+                episode_prices_local.append(info['execution_price'])
+                episode_volumes_local.append(info['quantity_sold'])
+                
+                execution_times.append(step)
+                execution_quantities.append(info['quantity_sold'])
             
-            # Stocker l'inventaire à ce pas
             inventory_trajectories[ep_idx, step + 1] = info['inventory_remaining']
             
             state = next_state
             step += 1
         
-        # ...existing code...
-        # ═══════════════════════════════════════════════════════════════
-        # MÉTRIQUES FINALES DE L'ÉPISODE
-        # ═══════════════════════════════════════════════════════════════
         agent_revenue = info['total_revenue']
         ep_revenues.append(agent_revenue)
         ep_lengths.append(effective_steps)
         ep_impacts.append(np.mean(episode_impacts_local) if episode_impacts_local else 0)
-        ep_twap_revenues.append(twap_total_revenue)  # ✅ NOUVEAU
+        ep_twap_revenues.append(twap_total_revenue)
+        ep_twap_impacts.append(np.mean(twap_impacts_local) if twap_impacts_local else 0)
         
-        # Performance relative (avec le VRAI TWAP calculé en parallèle)
         if twap_total_revenue > 1e-6:
             relative_performance = ((agent_revenue - twap_total_revenue) / twap_total_revenue) * 100
         else:
             relative_performance = 0.0
         ep_twap_comparisons.append(relative_performance)
+        
+        # ✅ FIX: Calculate Per-Episode Metrics INSIDE the loop
+        
+        # VWAP Diff Calculation
+        total_vol_agent = sum(episode_volumes_local)
+        if total_vol_agent > 0:
+            vwap_agent = sum(p * v for p, v in zip(episode_prices_local, episode_volumes_local)) / total_vol_agent
+        else:
+            vwap_agent = 0
+        
+        if initial_inventory > 0:
+            vwap_twap = twap_total_revenue / initial_inventory
+        else:
+            vwap_twap = 0
+        
+        if vwap_twap > 0:
+            ep_vwap_diffs.append((vwap_agent - vwap_twap) / vwap_twap * 10000)
+        else:
+            ep_vwap_diffs.append(0.0)
+        
+        # Timing Bias Calculation
+        if sum(execution_quantities) > 0:
+            center_of_mass = np.average(execution_times, weights=execution_quantities)
+            ep_timing_bias.append(center_of_mass / horizon_steps)
+        else:
+            ep_timing_bias.append(0.5)
+        
+        if sum(twap_execution_quantities) > 0:
+            twap_center_of_mass = np.average(twap_execution_times, weights=twap_execution_quantities)
+            ep_twap_timing_bias.append(twap_center_of_mass / horizon_steps)
+        else:
+            ep_twap_timing_bias.append(0.5)
     
-    # Calculer trajectoire moyenne ET statistiques de dispersion
     avg_inventory_trajectory = np.mean(inventory_trajectories, axis=0)
-    std_inventory_trajectory = np.std(inventory_trajectories, axis=0) # ✅ NOUVEAU
-    min_inventory_trajectory = np.min(inventory_trajectories, axis=0) # ✅ NOUVEAU
-    max_inventory_trajectory = np.max(inventory_trajectories, axis=0) # ✅ NOUVEAU
+    std_inventory_trajectory = np.std(inventory_trajectories, axis=0) if 'inventory_trajectory' in locals() else np.std(inventory_trajectories, axis=0)
+    min_inventory_trajectory = np.min(inventory_trajectories, axis=0)
+    max_inventory_trajectory = np.max(inventory_trajectories, axis=0)
+    
+    # ✅ NEW: Calculate Robustness for Final Validation
+    initial_value = initial_inventory * env.initial_price
+    robust_cvar, robust_win_rate = evaluate_targeted_robustness(
+        ep_revenues, ep_twap_revenues, initial_value
+    )
     
     return {
         'agent_name': agent_name,
         'avg_revenue': np.mean(ep_revenues),
         'median_revenue': np.median(ep_revenues),
+        'avg_twap_revenue': np.mean(ep_twap_revenues),
+        'median_twap_revenue': np.median(ep_twap_revenues),
+        
         'avg_length': np.mean(ep_lengths),
         'median_length': np.median(ep_lengths),
+        'min_length': np.min(ep_lengths),
+        'max_length': np.max(ep_lengths),
+        
         'avg_impact': np.mean(ep_impacts),
         'median_impact': np.median(ep_impacts),
+        'std_impact': np.std(ep_impacts),
+        
+        'avg_twap_impact': np.mean(ep_twap_impacts),
+        'median_twap_impact': np.median(ep_twap_impacts),
+        'std_twap_impact': np.std(ep_twap_impacts),
+        
         'avg_twap_comparison': np.mean(ep_twap_comparisons),
         'median_twap_comparison': np.median(ep_twap_comparisons),
-        'avg_twap_revenue': np.mean(ep_twap_revenues),
+        
+        'avg_vwap_diff': np.mean(ep_vwap_diffs),
+        'avg_timing_bias': np.mean(ep_timing_bias),
+        'avg_twap_timing_bias': np.mean(ep_twap_timing_bias),
+        
         'avg_inventory_trajectory': avg_inventory_trajectory,
-        'std_inventory_trajectory': std_inventory_trajectory, # ✅ NOUVEAU
-        'min_inventory_trajectory': min_inventory_trajectory, # ✅ NOUVEAU
-        'max_inventory_trajectory': max_inventory_trajectory  # ✅ NOUVEAU
+        'std_inventory_trajectory': std_inventory_trajectory,
+        'min_inventory_trajectory': min_inventory_trajectory,
+        'max_inventory_trajectory': max_inventory_trajectory,
+        'robust_cvar': robust_cvar,
+        'robust_win_rate': robust_win_rate
     }
 
 
@@ -369,13 +462,21 @@ def print_validation_stats(episode: int, n_episodes: int, metrics: dict):
     print(f"  🎁 Récompense Agent (med):    {metrics['median_reward']:>15.2f}")
     print(f"  🎯 Perf vs TWAP (moy):        {metrics['avg_twap_comparison']:>15.2f} %")
     print(f"  🎯 Perf vs TWAP (med):        {metrics['median_twap_comparison']:>15.2f} %")
+    print(f"{'-'*80}")
+    print(f"  📉 ANALYSE DÉTAILLÉE (Agent vs TWAP)")
+    print(f"  💥 Impact Moyen:              {metrics['avg_impact']:>10.2f} bps  vs {metrics['avg_twap_impact']:>10.2f} bps (TWAP)")
+    print(f"  💥 Impact Médian:             {metrics['median_impact']:>10.2f} bps  vs {metrics['median_twap_impact']:>10.2f} bps (TWAP)")
+    print(f"  📊 Impact Std Dev:            {metrics['impact_std']:>10.2f} bps  vs {metrics['twap_impact_std']:>10.2f} bps (TWAP)")
+    print(f"  ⚖️  VWAP Différence:          {metrics['vwap_diff_bps']:>15.2f} bps (Negative = Sold Cheaper)")
+    print(f"  ⏳ Timing Bias (0-1):         {metrics['timing_bias']:>10.2f}       vs {metrics['twap_timing_bias']:>10.2f}       (TWAP)")
+    print(f"{'-'*80}")
+    print(f"  🛡️ ROBUSTNESS (Bear Mkts):    CVaR {metrics['robust_cvar']:.2f} USDT | WinRate {metrics['robust_win_rate']:.1f}%")
+    print(f"{'-'*80}")
     print(f"  📏 Pas effectifs (moy):       {metrics['avg_length']:>15.1f} pas")
     print(f"  📏 Pas effectifs (med):       {metrics['median_length']:>15.1f} pas")
-    print(f"  📏 Pas effectifs (min):       {metrics['min_length']:>15.0f} pas")  # ✅ NOUVEAU
-    print(f"  📏 Pas effectifs (max):       {metrics['max_length']:>15.0f} pas")  # ✅ NOUVEAU
+    print(f"  📏 Pas effectifs (min):       {metrics['min_length']:>15.0f} pas")
+    print(f"  📏 Pas effectifs (max):       {metrics['max_length']:>15.0f} pas")
     print(f"  📈 Taux de complétion:        {metrics['completion_rate']:>15.1f} %")
-    print(f"  💥 Impact moyen:              {metrics['avg_impact']:>15.2f} bps")
-    print(f"  💥 Impact TWAP:               {metrics['avg_twap_impact']:>15.2f} bps")
     print(f"{'='*80}")
 
 
@@ -388,14 +489,21 @@ def print_final_validation_stats(results: list):
     for res in results:
         print(f"🤖 {res['agent_name']}")
         print(f"  {'─'*76}")
-        print(f"  💰 Revenu moyen:         {res['avg_revenue']:>15,.2f} USDT")
-        print(f"  💰 Revenu médian:        {res['median_revenue']:>15,.2f} USDT")
+        print(f"  💰 Revenu Agent (moy):   {res['avg_revenue']:>15,.2f} USDT")
+        print(f"  💰 Revenu TWAP (moy):    {res['avg_twap_revenue']:>15,.2f} USDT")
         print(f"  🎯 Perf vs TWAP (moy):   {res['avg_twap_comparison']:>15.2f} %")
         print(f"  🎯 Perf vs TWAP (med):   {res['median_twap_comparison']:>15.2f} %")
+        print(f"  🛡️ CVaR (Bear Mkts):     {res['robust_cvar']:>15.2f} USDT")
+        print(f"  🏆 Win Rate (Bear):      {res['robust_win_rate']:>15.1f} %")
+        print(f"  ⚖️ VWAP Différence:      {res['avg_vwap_diff']:>15.2f} bps")
+        print(f"  ⏳ Timing Bias:          {res['avg_timing_bias']:>15.2f} vs {res['avg_twap_timing_bias']:.2f} (TWAP)")
         print(f"  📏 Pas effectifs (moy):  {res['avg_length']:>15.1f}")
-        print(f"  📏 Pas effectifs (med):  {res['median_length']:>15.1f}")
-        print(f"  💥 Impact moyen:         {res['avg_impact']:>15.2f} bps")
-        print(f"  💥 Impact médian:        {res['median_impact']:>15.2f} bps")
+        print(f"  📏 Pas effectifs (min/max): {res['min_length']:.0f} / {res['max_length']:.0f}")
+        print(f"  💥 Impact moyen Agent :         {res['avg_impact']:>15.2f} bps")
+        print(f"  💥 Impact moyen TWAP :       {res['avg_twap_impact']:>15.2f} bps")
+        print(f"  💥 Impact Agent (med/std):  {res['median_impact']:.2f} ± {res['std_impact']:.2f} bps")
+        print(f"  💥 Impact TWAP (med/std):   {res['median_twap_impact']:.2f} ± {res['std_twap_impact']:.2f} bps")
+   
         print()
     
     print(f"{'='*80}\n")
@@ -404,7 +512,7 @@ def print_final_validation_stats(results: list):
 def train_ppo(
     data_path: str,
     n_episodes: int = 1000,
-    horizon_steps: int = 240,  # ✅ CHANGED: 60 -> 240
+    horizon_steps: int = 240,
     initial_inventory: float = 1000,
     lr: float = 3e-4,
     gamma: float = 0.99,
@@ -417,8 +525,7 @@ def train_ppo(
     save_interval: int = 100,
     model_save_path: str = '../models/ppo_execution.pth',
     pretrained_model_path: str = None,
-    override_epsilon: float = None,
-    debug_reward_inconsistency: bool = False
+    override_epsilon: float = None
 ):
     """Entraîner l'agent PPO avec validation périodique et sauvegarde du meilleur modèle"""
     
@@ -453,7 +560,6 @@ def train_ppo(
     # ═══════════════════════════════════════════════════════════════
     
     print("Initialisation de l'agent PPO...")
-    # ✅ CHANGED: Deeper network for financial data
     hidden_dims = [256, 128, 64]  
     
     agent = PPOAgent(
@@ -511,12 +617,23 @@ def train_ppo(
     validation_completion_rates = []
     validation_rewards_mean = []
     validation_rewards_median = []
-    all_lengths_history = []  # ✅ NOUVEAU : Liste de toutes les listes de longueurs
+    
+    # ✅ NEW: Tracking Robustness Metrics History
+    validation_cvar = []
+    validation_win_rate = []
+    validation_vwap_diff = []
+    
+    all_lengths_history = []
     
     best_mean_performance = -np.inf
     best_median_performance = -np.inf
+    best_cvar_performance = -np.inf
+    best_win_rate_performance = -np.inf
+    
     best_mean_model_path = model_save_path.replace('.pth', '_best_mean.pth')
     best_median_model_path = model_save_path.replace('.pth', '_best_median.pth')
+    best_cvar_model_path = model_save_path.replace('.pth', '_best_cvar.pth')
+    best_win_rate_model_path = model_save_path.replace('.pth', '_best_win_rate.pth')
     
     # ═══════════════════════════════════════════════════════════════
     # 4. BOUCLE D'ENTRAÎNEMENT
@@ -530,9 +647,6 @@ def train_ppo(
         print(f"Mode: FROM SCRATCH")
     print(f"Validation tous les {validation_interval} épisodes ({n_validation_episodes} épisodes/validation)")
     print(f"Epsilon actuel: {agent.epsilon:.3f}")
-    
-    if debug_reward_inconsistency:
-        print(f"⚠️  MODE DÉBOGAGE ACTIVÉ : Vérification cohérence en validation uniquement")
     
     print(f"{'='*80}\n")
     
@@ -561,16 +675,8 @@ def train_ppo(
         if (episode + 1) % validation_interval == 0:
             val_metrics = run_validation(
                 agent, env_val, n_validation_episodes,
-                horizon_steps, initial_inventory,
-                debug_mode=debug_reward_inconsistency
+                horizon_steps, initial_inventory
             )
-            
-            # Vérifier si incohérence détectée
-            if debug_reward_inconsistency and val_metrics.get('inconsistency_detected', False):
-                print(f"\n{'⚠️ '*50}")
-                print(f"ENTRAÎNEMENT INTERROMPU À L'ÉPISODE {episode + 1}")
-                print(f"{'⚠️ '*50}\n")
-                return agent, env_val
             
             validation_episodes.append(episode + 1)
             validation_revenues_mean.append(val_metrics['avg_revenue'])
@@ -588,10 +694,17 @@ def train_ppo(
             validation_completion_rates.append(val_metrics['completion_rate'])
             validation_rewards_mean.append(val_metrics['avg_reward'])
             validation_rewards_median.append(val_metrics['median_reward'])
-            all_lengths_history.append(val_metrics['all_lengths'])  # ✅ NOUVEAU
+            
+            # ✅ NEW: Append Robustness Metrics
+            validation_cvar.append(val_metrics['robust_cvar'])
+            validation_win_rate.append(val_metrics['robust_win_rate'])
+            validation_vwap_diff.append(val_metrics['vwap_diff_bps'])
+            
+            all_lengths_history.append(val_metrics['all_lengths'])
             
             print_validation_stats(episode + 1, n_episodes, val_metrics)
             
+            # Save Best Models
             if val_metrics['avg_twap_comparison'] > best_mean_performance:
                 best_mean_performance = val_metrics['avg_twap_comparison']
                 agent.save(best_mean_model_path)
@@ -601,12 +714,22 @@ def train_ppo(
                 best_median_performance = val_metrics['median_twap_comparison']
                 agent.save(best_median_model_path)
                 print(f"💎 Nouveau meilleur modèle (MÉDIANE) ! Performance: {best_median_performance:.2f}% vs TWAP")
+                
+            # ✅ NEW: Save Best Robust Models
+            if val_metrics['robust_cvar'] > best_cvar_performance:
+                best_cvar_performance = val_metrics['robust_cvar']
+                agent.save(best_cvar_model_path)
+                print(f"🛡️ Nouveau meilleur modèle (CVaR) ! CVaR: {best_cvar_performance:.2f} USDT")
+                
+            if val_metrics['robust_win_rate'] > best_win_rate_performance:
+                best_win_rate_performance = val_metrics['robust_win_rate']
+                agent.save(best_win_rate_model_path)
+                print(f"🏆 Nouveau meilleur modèle (WIN RATE) ! Win Rate: {best_win_rate_performance:.1f}%")
             
             main_pbar.set_postfix({
                 'Val_Mean': f"{val_metrics['avg_twap_comparison']:.2f}%",
-                'Val_Median': f"{val_metrics['median_twap_comparison']:.2f}%",
-                'Best_Mean': f"{best_mean_performance:.2f}%",
-                'Best_Median': f"{best_median_performance:.2f}%"
+                'CVaR': f"{val_metrics['robust_cvar']:.0f}",
+                'WinRate': f"{val_metrics['robust_win_rate']:.0f}%"
             })
         
         if (episode + 1) % save_interval == 0:
@@ -620,6 +743,8 @@ def train_ppo(
     print(f"💾 Modèle final: {model_save_path}")
     print(f"💎 Meilleur (moyenne): {best_mean_model_path} ({best_mean_performance:.2f}%)")
     print(f"💎 Meilleur (médiane): {best_median_model_path} ({best_median_performance:.2f}%)")
+    print(f"🛡️ Meilleur (CVaR):    {best_cvar_model_path} ({best_cvar_performance:.2f})")
+    print(f"🏆 Meilleur (WinRate): {best_win_rate_model_path} ({best_win_rate_performance:.1f}%)")
     print(f"{'='*80}\n")
     
     # ═══════════════════════════════════════════════════════════════
@@ -632,7 +757,7 @@ def train_ppo(
     
     final_results = []
     
-    # Charger et valider les 3 modèles
+    # Charger et valider les 4 modèles (Mean, Median, CVaR, WinRate)
     agents_to_test = []
     
     # Modèle final
@@ -640,38 +765,31 @@ def train_ppo(
     
     # Meilleur (moyenne)
     if os.path.exists(best_mean_model_path):
-        best_mean_agent = PPOAgent(
-            state_dim=env_val.observation_space.shape[0],
-            action_dim=env_val.action_space.n,
-            lr=lr, 
-            gamma=gamma, 
-            epsilon=epsilon, 
-            lambda_gae=lambda_gae,
-            hidden_dims=hidden_dims,  # ✅ CORRECTION
-            device='cuda' if os.path.exists('/usr/local/cuda') else 'cpu'
-        )
+        best_mean_agent = PPOAgent(state_dim=env_val.observation_space.shape[0], action_dim=env_val.action_space.n, lr=lr, gamma=gamma, epsilon=epsilon, lambda_gae=lambda_gae, hidden_dims=hidden_dims, device='cuda' if os.path.exists('/usr/local/cuda') else 'cpu')
         best_mean_agent.load(best_mean_model_path)
         agents_to_test.append(('Meilleur (Moyenne)', best_mean_agent))
     
     # Meilleur (médiane)
     if os.path.exists(best_median_model_path):
-        best_median_agent = PPOAgent(
-            state_dim=env_val.observation_space.shape[0],
-            action_dim=env_val.action_space.n,
-            lr=lr, 
-            gamma=gamma, 
-            epsilon=epsilon, 
-            lambda_gae=lambda_gae,
-            hidden_dims=hidden_dims,  # ✅ CORRECTION
-            device='cuda' if os.path.exists('/usr/local/cuda') else 'cpu'
-        )
+        best_median_agent = PPOAgent(state_dim=env_val.observation_space.shape[0], action_dim=env_val.action_space.n, lr=lr, gamma=gamma, epsilon=epsilon, lambda_gae=lambda_gae, hidden_dims=hidden_dims, device='cuda' if os.path.exists('/usr/local/cuda') else 'cpu')
         best_median_agent.load(best_median_model_path)
         agents_to_test.append(('Meilleur (Médiane)', best_median_agent))
+        
+    # ✅ NEW: Load Robust Models
+    if os.path.exists(best_cvar_model_path):
+        best_cvar_agent = PPOAgent(state_dim=env_val.observation_space.shape[0], action_dim=env_val.action_space.n, lr=lr, gamma=gamma, epsilon=epsilon, lambda_gae=lambda_gae, hidden_dims=hidden_dims, device='cuda' if os.path.exists('/usr/local/cuda') else 'cpu')
+        best_cvar_agent.load(best_cvar_model_path)
+        agents_to_test.append(('Meilleur (CVaR)', best_cvar_agent))
+        
+    if os.path.exists(best_win_rate_model_path):
+        best_win_rate_agent = PPOAgent(state_dim=env_val.observation_space.shape[0], action_dim=env_val.action_space.n, lr=lr, gamma=gamma, epsilon=epsilon, lambda_gae=lambda_gae, hidden_dims=hidden_dims, device='cuda' if os.path.exists('/usr/local/cuda') else 'cpu')
+        best_win_rate_agent.load(best_win_rate_model_path)
+        agents_to_test.append(('Meilleur (WinRate)', best_win_rate_agent))
     
     # Valider chaque agent
     for agent_name, test_agent in agents_to_test:
         result = run_final_validation(
-            test_agent, env_val, 100,
+            test_agent, env_val, 1000,
             horizon_steps, initial_inventory, agent_name
         )
         final_results.append(result)
@@ -700,9 +818,14 @@ def train_ppo(
         validation_completion_rates,
         validation_rewards_mean,
         validation_rewards_median,
+        # ✅ NEW ARGS
+        validation_cvar,
+        validation_win_rate,
+        validation_vwap_diff,
+        
         initial_inventory,
         all_lengths_history,
-        horizon_steps=horizon_steps  # ✅ ADDED: Pass horizon steps
+        horizon_steps=horizon_steps
     )
     
     plot_final_inventory_evolution(final_results, horizon_steps, initial_inventory)
@@ -719,20 +842,8 @@ def plot_final_inventory_evolution(results: list, horizon_steps: int, initial_in
     colors = ['steelblue', 'darkgreen', 'coral']
     
     for idx, res in enumerate(results):
-        # Récupérer les trajectoires brutes si disponibles, sinon on ne peut pas tracer la variance
-        # Note: run_final_validation doit être modifié pour retourner 'all_trajectories'
-        # Pour l'instant, on suppose que 'avg_inventory_trajectory' est la moyenne
-        # et on va ajouter une simulation de variance si les données brutes manquent, 
-        # MAIS l'idéal est de modifier run_final_validation.
-        
-        # Comme je ne peux pas modifier run_final_validation dans ce bloc sans tout réécrire,
-        # je vais supposer que 'std_inventory_trajectory' et 'min_inventory_trajectory' / 'max_inventory_trajectory'
-        # sont disponibles dans res. Si elles ne le sont pas, je vais modifier run_final_validation ci-dessous.
-        
         avg_traj = res['avg_inventory_trajectory']
         std_traj = res.get('std_inventory_trajectory', np.zeros_like(avg_traj))
-        min_traj = res.get('min_inventory_trajectory', avg_traj)
-        max_traj = res.get('max_inventory_trajectory', avg_traj)
         
         color = colors[idx % len(colors)]
         
@@ -746,10 +857,6 @@ def plot_final_inventory_evolution(results: list, horizon_steps: int, initial_in
                         np.maximum(0, avg_traj - std_traj), 
                         np.minimum(initial_inventory, avg_traj + std_traj),
                         color=color, alpha=0.2, label=f"{res['agent_name']} (±1 std)")
-        
-        # Tracer la bande Min-Max (Range) - Optionnel, peut surcharger le graph
-        # ax.plot(time_steps, min_traj, linestyle=':', color=color, alpha=0.5, linewidth=1)
-        # ax.plot(time_steps, max_traj, linestyle=':', color=color, alpha=0.5, linewidth=1)
     
     # TWAP de référence (linéaire)
     twap_trajectory = np.linspace(initial_inventory, 0, horizon_steps + 1)
@@ -776,171 +883,139 @@ def plot_validation_results(episodes, revenues_mean, revenues_median, lengths_me
                            twap_revenues_mean, twap_revenues_median, 
                            twap_comparisons_mean, twap_comparisons_median, completion_rates,
                            rewards_mean, rewards_median,
+                           # ✅ NEW ARGS
+                           cvar_history, win_rate_history, vwap_diff_history,
+                           
                            initial_inventory,
                            all_lengths_history,
-                           horizon_steps=240):  # ✅ ADDED: Default to 240 but adjustable
+                           horizon_steps=240):
     """Visualiser les résultats de validation"""
     
-    fig, axes = plt.subplots(3, 3, figsize=(20, 15))
+    # ✅ CHANGED: Increased to 4 rows to fit new metrics
+    fig, axes = plt.subplots(4, 3, figsize=(20, 20))
     fig.suptitle('Résultats de VALIDATION - Agent PPO vs TWAP', 
                  fontsize=16, fontweight='bold')
     
-    # 1. Récompenses (Moyenne et Médiane)
+    # Row 1: Rewards, Revenues Mean, Revenues Median
     ax = axes[0, 0]
-    ax.plot(episodes, rewards_mean, 'o-', label='Moyenne', color='darkviolet', linewidth=2, markersize=4)
-    ax.plot(episodes, rewards_median, 's-', label='Médiane', color='purple', linewidth=2, markersize=4)
-    ax.axhline(y=0, color='red', linestyle='--', alpha=0.5, linewidth=1, label='Baseline (TWAP=0)')
-    ax.set_title('Récompenses Totales de l\'Agent')
-    ax.set_xlabel('Épisode')
-    ax.set_ylabel('Récompense')
+    ax.plot(episodes, rewards_mean, 'o-', label='Moyenne', color='darkviolet')
+    ax.plot(episodes, rewards_median, 's-', label='Médiane', color='purple')
+    ax.axhline(y=0, color='red', linestyle='--')
+    ax.set_title('Récompenses Totales')
     ax.legend()
     ax.grid(True, alpha=0.3)
     
-    # 2. Revenus (Moyenne)
     ax = axes[0, 1]
-    ax.plot(episodes, revenues_mean, 'o-', label='Agent PPO (moy)', color='steelblue', linewidth=2, markersize=4)
-    ax.plot(episodes, twap_revenues_mean, 's-', label='TWAP (moy)', color='orange', linewidth=2, markersize=4)
-    ax.set_title('Revenus Totaux (Moyenne)')
-    ax.set_xlabel('Épisode')
-    ax.set_ylabel('Revenu (USDT)')
+    ax.plot(episodes, revenues_mean, 'o-', label='Agent', color='steelblue')
+    ax.plot(episodes, twap_revenues_mean, 's-', label='TWAP', color='orange')
+    ax.set_title('Revenus (Moyenne)')
     ax.legend()
     ax.grid(True, alpha=0.3)
-    ax.ticklabel_format(style='plain', axis='y')
     
-    # 3. Revenus (Médiane)
     ax = axes[0, 2]
-    ax.plot(episodes, revenues_median, 'o-', label='Agent PPO (med)', color='darkblue', linewidth=2, markersize=4)
-    ax.plot(episodes, twap_revenues_median, 's-', label='TWAP (med)', color='darkorange', linewidth=2, markersize=4)
-    ax.set_title('Revenus Totaux (Médiane)')
-    ax.set_xlabel('Épisode')
-    ax.set_ylabel('Revenu (USDT)')
+    ax.plot(episodes, revenues_median, 'o-', label='Agent', color='darkblue')
+    ax.plot(episodes, twap_revenues_median, 's-', label='TWAP', color='darkorange')
+    ax.set_title('Revenus (Médiane)')
     ax.legend()
     ax.grid(True, alpha=0.3)
-    ax.ticklabel_format(style='plain', axis='y')
     
-    # 4. Performance vs TWAP
+    # Row 2: Perf vs TWAP, Lengths, Impacts
     ax = axes[1, 0]
-    ax.plot(episodes, twap_comparisons_mean, 'o-', label='Moyenne', color='green', linewidth=2, markersize=4)
-    ax.plot(episodes, twap_comparisons_median, 's-', label='Médiane', color='darkgreen', linewidth=2, markersize=4)
-    ax.axhline(y=0, color='red', linestyle='--', alpha=0.5, linewidth=1)
+    ax.plot(episodes, twap_comparisons_mean, 'o-', label='Moyenne', color='green')
+    ax.plot(episodes, twap_comparisons_median, 's-', label='Médiane', color='darkgreen')
+    ax.axhline(y=0, color='red', linestyle='--')
     ax.set_title('Performance vs TWAP (%)')
-    ax.set_xlabel('Épisode')
-    ax.set_ylabel('Amélioration (%)')
     ax.legend()
     ax.grid(True, alpha=0.3)
     
-    # 5. Pas effectifs (SANS pas totaux)
     ax = axes[1, 1]
-    ax.plot(episodes, lengths_mean, 'o-', label='Pas effectifs (moy)', color='coral', linewidth=2, markersize=4)
-    ax.plot(episodes, lengths_median, 's-', label='Pas effectifs (med)', color='darkred', linewidth=2, markersize=4)
-    
-    # ✅ CHANGED: Dynamic horizon line
-    ax.axhline(y=horizon_steps, color='blue', linestyle='--', alpha=0.5, label=f'TWAP ({horizon_steps} pas)', linewidth=2)
-    
-    ax.set_title('Nombre de Pas avec Vente')
-    ax.set_xlabel('Épisode')
-    ax.set_ylabel('Nombre de pas')
+    ax.plot(episodes, lengths_mean, 'o-', label='Moyenne', color='coral')
+    ax.axhline(y=horizon_steps, color='blue', linestyle='--')
+    ax.set_title('Pas Effectifs')
     ax.legend()
     ax.grid(True, alpha=0.3)
     
-    # ✅ CHANGED: Dynamic Y-limit (Horizon + 10%)
-    ax.set_ylim([0, horizon_steps * 1.1])
-    
-    # 6. Impact de marché (AVEC TWAP)
     ax = axes[1, 2]
-    ax.plot(episodes, avg_impacts, 'o-', label='Agent PPO', color='purple', linewidth=2, markersize=4)
-    ax.plot(episodes, twap_impacts, 's-', label='TWAP', color='orange', linewidth=2, markersize=4)
-    ax.set_title('Impact de Marché Moyen')
-    ax.set_xlabel('Épisode')
-    ax.set_ylabel('Impact (basis points)')
+    ax.plot(episodes, avg_impacts, 'o-', label='Agent', color='purple')
+    ax.plot(episodes, twap_impacts, 's-', label='TWAP', color='orange')
+    ax.set_title('Impact de Marché (bps)')
     ax.legend()
     ax.grid(True, alpha=0.3)
     
-    # 7. ✅ NOUVEAU : Pas effectifs par épisode + Moyenne mobile
+    # Row 3: Length Distribution, Perf Distribution, VWAP Diff (Moved here)
     ax = axes[2, 0]
-    
-    # Préparer les données : tous les épisodes de validation
+    # ... [Length scatter plot code] ...
     all_validation_episodes = []
     all_validation_lengths = []
     for i, val_ep in enumerate(episodes):
-        # Chaque validation contient N épisodes
         n_eps_in_validation = len(all_lengths_history[i])
-        # Créer des indices d'épisodes relatifs pour cette validation
         episode_indices = np.arange(n_eps_in_validation) + val_ep - n_eps_in_validation + 1
         all_validation_episodes.extend(episode_indices)
         all_validation_lengths.extend(all_lengths_history[i])
-    
-    # Calculer la moyenne mobile sur 10 épisodes
-    rolling_mean = []
-    window_size = 10
-    for i in range(len(all_validation_lengths)):
-        start_idx = max(0, i - window_size + 1)
-        rolling_mean.append(np.mean(all_validation_lengths[start_idx:i+1]))
-    
-    # Tracer les points individuels (plus petits et transparents)
-    ax.scatter(all_validation_episodes, all_validation_lengths, 
-               alpha=0.3, s=10, color='steelblue', label='Pas effectifs')
-    
-    # Tracer la moyenne mobile
-    ax.plot(all_validation_episodes, rolling_mean, 
-            color='darkred', linewidth=2.5, label='Moyenne mobile (10 épisodes)')
-    
-    # ✅ CHANGED: Dynamic horizon line
-    ax.axhline(y=horizon_steps, color='blue', linestyle='--', alpha=0.5, label=f'TWAP ({horizon_steps} pas)', linewidth=2)
-    
-    ax.set_title('Pas Effectifs par Épisode de Validation')
-    ax.set_xlabel('Épisode d\'entraînement')
-    ax.set_ylabel('Nombre de pas')
-    ax.legend(fontsize=9)
+    ax.scatter(all_validation_episodes, all_validation_lengths, alpha=0.3, s=10, color='steelblue')
+    ax.axhline(y=horizon_steps, color='blue', linestyle='--')
+    ax.set_title('Distribution des Pas')
     ax.grid(True, alpha=0.3)
     
-    # ✅ CHANGED: Dynamic Y-limit
-    ax.set_ylim([0, horizon_steps * 1.1])
-    
-    # 8. Distribution Performance
     ax = axes[2, 1]
+    # ... [Bar chart code] ...
     if len(episodes) > 1:
         bar_width = (episodes[1] - episodes[0]) * 0.4
     else:
         bar_width = 40
-    ax.bar([e - bar_width/2 for e in episodes], twap_comparisons_mean, 
-           width=bar_width, label='Moyenne', color='green', alpha=0.7)
-    ax.bar([e + bar_width/2 for e in episodes], twap_comparisons_median, 
-           width=bar_width, label='Médiane', color='darkgreen', alpha=0.7)
-    ax.axhline(y=0, color='black', linestyle='--', linewidth=1)
-    ax.set_title('Performance vs TWAP')
-    ax.set_xlabel('Épisode')
-    ax.set_ylabel('Amélioration (%)')
-    ax.legend()
-    ax.grid(True, alpha=0.3, axis='y')
+    ax.bar([e - bar_width/2 for e in episodes], twap_comparisons_mean, width=bar_width, color='green', alpha=0.7)
+    ax.axhline(y=0, color='black', linestyle='--')
+    ax.set_title('Distribution Performance')
+    ax.grid(True, alpha=0.3)
     
-    # 9. Statistiques finales
+    # ✅ NEW PLOT: VWAP Difference
     ax = axes[2, 2]
-    ax.axis('off')
+    ax.plot(episodes, vwap_diff_history, 'o-', color='teal', label='VWAP Diff (bps)')
+    ax.axhline(y=0, color='red', linestyle='--')
+    ax.set_title('VWAP Différence (bps)')
+    ax.set_ylabel('Agent - TWAP (bps)')
+    ax.legend()
+    ax.grid(True, alpha=0.3)
     
+    # ✅ ROW 4: ROBUSTNESS METRICS
+    
+    # CVaR
+    ax = axes[3, 0]
+    ax.plot(episodes, cvar_history, 'o-', color='crimson', label='CVaR (5%)')
+    ax.set_title('Robustesse: CVaR (Bear Markets)')
+    ax.set_ylabel('Perte vs TWAP (USDT)')
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    
+    # Win Rate
+    ax = axes[3, 1]
+    ax.plot(episodes, win_rate_history, 'o-', color='forestgreen', label='Win Rate')
+    ax.axhline(y=50, color='gray', linestyle='--')
+    ax.set_title('Robustesse: Win Rate (Bear Markets)')
+    ax.set_ylabel('% Victoires')
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    
+    # Final Stats Text
+    ax = axes[3, 2]
+    ax.axis('off')
     stats_text = f"""
     📊 STATISTIQUES FINALES
     {'─'*45}
-    
     🎁 Récompense (moy):      {rewards_mean[-1]:,.1f}
-    🎁 Récompense (med):      {rewards_median[-1]:,.1f}
-    
-    💰 Revenu Agent (moy):    {revenues_mean[-1]:,.0f}
-    💰 Revenu Agent (med):    {revenues_median[-1]:,.0f}
-    📊 Revenu TWAP (moy):     {twap_revenues_mean[-1]:,.0f}
-    📊 Revenu TWAP (med):     {twap_revenues_median[-1]:,.0f}
-    
     🎯 Perf vs TWAP (moy):    {twap_comparisons_mean[-1]:+.2f} %
     🎯 Perf vs TWAP (med):    {twap_comparisons_median[-1]:+.2f} %
     
+    🛡️ CVaR (Bear):           {cvar_history[-1]:.2f} USDT
+    🏆 Win Rate (Bear):       {win_rate_history[-1]:.1f} %
+    ⚖️ VWAP Diff:             {vwap_diff_history[-1]:.2f} bps
+    
     📏 Pas effectifs (moy):   {lengths_mean[-1]:.1f}
     📏 Pas effectifs (med):   {lengths_median[-1]:.1f}
-    
+    💥 Impact Agent:          {avg_impacts[-1]:.2f} bps
+    💥 Impact TWAP:           {twap_impacts[-1]:.2f} bps
     {'─'*45}
-    Validations: {len(episodes)}
-    Épisodes: {episodes[-1]}
     """
-    
     ax.text(0.1, 0.5, stats_text, fontsize=10, family='monospace',
             verticalalignment='center', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
     
@@ -953,25 +1028,24 @@ def plot_validation_results(episodes, revenues_mean, revenues_median, lengths_me
 if __name__ == "__main__":
     data_path = '../data/raw/BTCUSDT_1m_train_2023-01-01_to_2023-12-31.csv'
     
-
-    # ═══════════════════════════════════════════════════════════════
-    # EXEMPLE 2: FINE-TUNING (changer directement lr et epsilon)
-    # ═══════════════════════════════════════════════════════════════
     agent, env = train_ppo(
         data_path=data_path,
-        n_episodes=10000,
+        n_episodes=5000,
         horizon_steps=240,
         initial_inventory=1000,
-        lr=3e-4,                          
-        gamma=1,
-        epsilon=0.2,                       # Valeur de base
+        
+        # ✅ CHANGED: Hyperparameters for Robust Training
+        lr=1e-4/2,                            # Slower, more stable learning
+        update_interval=20,                 # Faster feedback (approx every 4800 steps)
+        
+        gamma=1.0,
+        epsilon=0.3,
         lambda_gae=0.95,
-        update_interval=80,
-        validation_interval=200,
-        n_validation_episodes=100,
-        random_start_prob=0,
+        validation_interval=100,
+        n_validation_episodes=200,
+        random_start_prob=0.9,
         save_interval=100,
         
-        pretrained_model_path=None#'../models/ppo_execution_0.pth',
-        #override_epsilon=0.1         
+        pretrained_model_path='../models/ppo_execution_best_median_nn.pth',
+        override_epsilon=0.2        
     )

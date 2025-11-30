@@ -146,7 +146,16 @@ class GarchSimulator:
         z = np.random.standard_t(self.nu) * std_t_scale
         
         current_volatility = np.sqrt(current_variance)
-        current_return = self.mean_return + current_volatility * z
+        
+        # ✅ SAFETY: Cap volatility to realistic max (2% per minute is already a crash)
+        current_volatility = min(current_volatility, 0.02)
+        
+        # ✅ CRITICAL FIX: Martingale Correction (Jensen's Inequality)
+        # We subtract 0.5 * sigma^2 to ensure E[Price_t] = Price_{t-1}
+        # Without this, the price naturally drifts UP due to volatility.
+        drift_correction = -0.5 * (current_volatility**2) # Use capped vol for correction
+        
+        current_return = self.mean_return + drift_correction + current_volatility * z
         
         # Jump Component
         if np.random.random() < self.jump_prob:
