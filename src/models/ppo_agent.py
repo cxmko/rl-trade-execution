@@ -48,7 +48,7 @@ class PPOAgent:
         gamma: float = 0.99,
         epsilon: float = 0.2,
         c1: float = 0.5,
-        c2: float = 0.15,
+        c2: float = 0.08,
         lambda_gae: float = 0.95,
         hidden_dims: List[int] = [256, 128, 64], # ✅ CHANGED: Deeper default
         device: str = 'cpu'

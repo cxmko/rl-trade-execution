@@ -1,0 +1,91 @@
+training log
+
+📊 VALIDATION FINALE - COMPARAISON DES MODÈLES
+================================================================================
+
+🤖 Modèle Final
+  ────────────────────────────────────────────────────────────────────────────
+  💰 Revenu Agent (moy):     28,818,652.17 USDT
+  💰 Revenu TWAP (moy):      28,907,814.06 USDT
+  🎯 Perf vs TWAP (moy):             -0.27 %
+  🎯 Perf vs TWAP (med):             -0.33 %
+  🛡️ CVaR (Bear Mkts):          -741835.90 USDT
+  🏆 Win Rate (Bear):                 23.6 %
+  ⚖️ VWAP Différence:               -27.47 bps
+  ⏳ Timing Bias:                     0.09 vs 0.50 (TWAP)
+  📏 Pas effectifs (moy):            191.4
+  📏 Pas effectifs (min/max): 44 / 202
+  💥 Impact moyen Agent :                   14.57 bps
+  💥 Impact moyen TWAP :                 22.86 bps
+  💥 Impact Agent (med/std):  13.80 ± 7.27 bps
+  💥 Impact TWAP (med/std):   22.19 ± 6.12 bps
+
+🤖 Meilleur (Moyenne)
+  ────────────────────────────────────────────────────────────────────────────
+  💰 Revenu Agent (moy):     29,048,665.00 USDT
+  💰 Revenu TWAP (moy):      29,045,817.26 USDT
+  🎯 Perf vs TWAP (moy):              0.01 %
+  🎯 Perf vs TWAP (med):              0.00 %
+  🛡️ CVaR (Bear Mkts):          -160899.45 USDT
+  🏆 Win Rate (Bear):                 54.4 %
+  ⚖️ VWAP Différence:                 1.48 bps
+  ⏳ Timing Bias:                     0.37 vs 0.50 (TWAP)
+  📏 Pas effectifs (moy):            231.4
+  📏 Pas effectifs (min/max): 156 / 240
+  💥 Impact moyen Agent :                   17.28 bps
+  💥 Impact moyen TWAP :                 22.55 bps
+  💥 Impact Agent (med/std):  16.67 ± 5.60 bps
+  💥 Impact TWAP (med/std):   21.56 ± 6.14 bps
+
+🤖 Meilleur (Médiane)
+  ────────────────────────────────────────────────────────────────────────────
+  💰 Revenu Agent (moy):     28,562,385.70 USDT
+  💰 Revenu TWAP (moy):      28,556,216.26 USDT
+  🎯 Perf vs TWAP (moy):              0.02 %
+  🎯 Perf vs TWAP (med):              0.01 %
+  🛡️ CVaR (Bear Mkts):          -166034.09 USDT
+  🏆 Win Rate (Bear):                 60.1 %
+  ⚖️ VWAP Différence:                 2.21 bps
+  ⏳ Timing Bias:                     0.42 vs 0.50 (TWAP)
+  📏 Pas effectifs (moy):            240.0
+  📏 Pas effectifs (min/max): 240 / 240
+  💥 Impact moyen Agent :                   17.91 bps
+  💥 Impact moyen TWAP :                 22.51 bps
+  💥 Impact Agent (med/std):  17.60 ± 6.08 bps
+  💥 Impact TWAP (med/std):   21.71 ± 6.16 bps
+
+🤖 Meilleur (CVaR)
+  ────────────────────────────────────────────────────────────────────────────
+  💰 Revenu Agent (moy):     28,750,487.89 USDT
+  💰 Revenu TWAP (moy):      28,763,384.39 USDT
+  🎯 Perf vs TWAP (moy):             -0.04 %
+  🎯 Perf vs TWAP (med):             -0.07 %
+  🛡️ CVaR (Bear Mkts):          -302435.07 USDT
+  🏆 Win Rate (Bear):                 38.6 %
+  ⚖️ VWAP Différence:                -3.53 bps
+  ⏳ Timing Bias:                     0.21 vs 0.50 (TWAP)
+  📏 Pas effectifs (moy):            237.2
+  📏 Pas effectifs (min/max): 179 / 240
+  💥 Impact moyen Agent :                   14.19 bps
+  💥 Impact moyen TWAP :                 22.96 bps
+  💥 Impact Agent (med/std):  13.01 ± 6.20 bps
+  💥 Impact TWAP (med/std):   22.01 ± 6.36 bps
+
+🤖 Meilleur (WinRate)
+  ────────────────────────────────────────────────────────────────────────────
+  💰 Revenu Agent (moy):     28,975,836.96 USDT
+  💰 Revenu TWAP (moy):      28,974,025.95 USDT
+  🎯 Perf vs TWAP (moy):              0.02 %
+  🎯 Perf vs TWAP (med):              0.01 %
+  🛡️ CVaR (Bear Mkts):          -188440.57 USDT
+  🏆 Win Rate (Bear):                 67.5 %
+  ⚖️ VWAP Différence:                 1.55 bps
+  ⏳ Timing Bias:                     0.33 vs 0.50 (TWAP)
+  📏 Pas effectifs (moy):            190.2
+  📏 Pas effectifs (min/max): 72 / 240
+  💥 Impact moyen Agent :                   20.53 bps
+  💥 Impact moyen TWAP :                 22.92 bps
+  💥 Impact Agent (med/std):  20.00 ± 5.55 bps
+  💥 Impact TWAP (med/std):   22.20 ± 6.30 bps
+
+=======================================================

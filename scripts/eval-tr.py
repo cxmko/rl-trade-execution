@@ -13,17 +13,26 @@ from src.environment.execution_env import OptimalExecutionEnv
 from src.models.ppo_agent import PPOAgent
 from scripts.train_ppo import run_final_validation, print_final_validation_stats, plot_final_inventory_evolution
 
-def evaluate_model(model_path, data_path, n_episodes=1000, horizon_steps=240, initial_inventory=1000, use_real_data=False):
+def evaluate_model(model_path, data_path, n_episodes=1000, horizon_steps=240, initial_inventory=1000, use_real_data=False, full_test=False):
     """
     Load a trained model and run a comprehensive evaluation.
     """
     print(f"\n{'='*80}")
     print(f"🧪 ÉVALUATION DU MODÈLE: {os.path.basename(model_path)}")
-    if use_real_data:
-        print(f"📊 MODE: DONNÉES RÉELLES (Backtest)")
+    
+    if full_test:
+        print(f"📅 MODE: FULL BACKTEST SÉQUENTIEL (Dataset Complet)")
+        use_real_data = True # Force real data for full test
+    elif use_real_data:
+        print(f"📊 MODE: DONNÉES RÉELLES (Échantillonnage Aléatoire)")
     else:
         print(f"🎲 MODE: SIMULATION GARCH")
     print(f"{'='*80}")
+    
+    # ✅ FIX: Optimize window for Real Data
+    # GARCH needs 5000 steps to calibrate parameters.
+    # Real Data only needs ~60 steps for rolling features.
+    calib_window = 200 if use_real_data else 5000
     
     # 1. Initialize Environment
     env = OptimalExecutionEnv(
@@ -33,9 +42,29 @@ def evaluate_model(model_path, data_path, n_episodes=1000, horizon_steps=240, in
         lambda_0=0.003,
         alpha=0.5,
         delta=0,
-        random_start_prob=0.0, # Deterministic start for fair evaluation
-        use_real_data=use_real_data # ✅ NEW
+        calibration_window=calib_window, # ✅ Apply optimized window
+        random_start_prob=0.0, 
+        use_real_data=use_real_data 
     )
+    
+    # ✅ NEW: Configure Sequential Mode if requested
+    if full_test:
+        # Calculate valid start range
+        # min_start will now be ~1200 instead of 6000 for real data
+        min_start = env.calibration_window + 60 
+        max_start = len(env.historical_data) - horizon_steps - 100
+        
+        # Calculate exact number of episodes fitting in the data
+        available_steps = max_start - min_start
+        n_episodes = available_steps // horizon_steps
+        
+        print(f"ℹ️  Configuration Backtest:")
+        print(f"   - Index Début: {min_start}")
+        print(f"   - Index Fin:   {max_start}")
+        print(f"   - Horizon:     {horizon_steps} min")
+        print(f"   - Épisodes:    {n_episodes} (Couverture complète)")
+        
+        env.set_sequential_backtest(min_start, horizon_steps)
     
     # 2. Initialize Agent
     hidden_dims = [256, 128, 64]
@@ -74,10 +103,12 @@ def evaluate_model(model_path, data_path, n_episodes=1000, horizon_steps=240, in
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Évaluer un modèle PPO entraîné.")
-    parser.add_argument("--model", type=str,default='../models/ppo_execution_best_median_nn.pth', help="Chemin vers le fichier .pth du modèle")
+    parser.add_argument("--model", type=str,default='../models/ppo_execution_best_cvar.pth', help="Chemin vers le fichier .pth du modèle")
     parser.add_argument("--data", type=str, default='../data/raw/BTCUSDT_1m_test_2024-01-01_to_2024-12-31.csv', help="Chemin vers les données de test")
-    parser.add_argument("--episodes", type=int, default=1000, help="Nombre d'épisodes de simulation")
-    parser.add_argument("--real", action="store_false", help="Utiliser les données réelles au lieu du simulateur GARCH") # ✅ NEW
+    parser.add_argument("--episodes", type=int, default=1000, help="Nombre d'épisodes (ignoré si --full)")
+
+    parser.add_argument("--real", action="store_false", help="Utiliser les données réelles (aléatoire)") 
+    parser.add_argument("--full", action="store_false", help="Backtest complet séquentiel sur tout le fichier") 
     
     args = parser.parse_args()
     
@@ -92,4 +123,4 @@ if __name__ == "__main__":
             print("❌ Aucune donnée trouvée.")
             sys.exit(1)
             
-    evaluate_model(args.model, args.data, args.episodes, use_real_data=args.real)
+    evaluate_model(args.model, args.data, args.episodes, use_real_data=args.real, full_test=args.full)

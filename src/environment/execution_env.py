@@ -83,7 +83,19 @@ class OptimalExecutionEnv(gym.Env):
         self.random_start_idx = 0
         self.current_data_idx = 0 # ✅ NEW: Track position in real data
         self.inventory_rand = 0
+        
+        # ✅ NEW: Sequential Backtest State
+        self.sequential_mode = False
+        self.next_sequential_start = 0
+        self.sequential_step = 0
     
+    def set_sequential_backtest(self, start_index: int, step_size: int):
+        """Activer le mode backtest séquentiel"""
+        self.sequential_mode = True
+        self.next_sequential_start = start_index
+        self.sequential_step = step_size
+        print(f"🔄 Mode Séquentiel Activé: Start={start_index}, Step={step_size}")
+
     def _calibrate_global(self):
         """Calibrer les modèles GARCH et volume sur TOUTES les données"""
         print("Calibration globale des modèles GARCH et volume...")
@@ -143,23 +155,39 @@ class OptimalExecutionEnv(gym.Env):
         if max_start < min_start:
             raise ValueError(f"Données insuffisantes.")
         
-        use_random_start = np.random.random() < self.random_start_prob
-        
-        if use_random_start:
-            self.random_start_idx = np.random.randint(min_start, max_start)
-            self.current_step = np.random.randint(0, self.horizon_steps)
+        # ✅ CHANGED: Logic for Sequential vs Random
+        if self.sequential_mode:
+            self.random_start_idx = self.next_sequential_start
+            self.next_sequential_start += self.sequential_step
             
-            random_time_elapsed_ratio = self.current_step / self.horizon_steps
-            inventory_sold_ratio = random_time_elapsed_ratio * np.random.uniform(0.8, 1.2)
-            inventory_sold_ratio = np.clip(inventory_sold_ratio, 0.0, 0.98)
+            # Loop back if we exceed data (though eval script should prevent this)
+            if self.random_start_idx > max_start:
+                print(f"⚠️ Fin des données atteinte ({self.random_start_idx}), retour au début.")
+                self.random_start_idx = min_start
+                self.next_sequential_start = min_start + self.sequential_step
             
-            self.inventory = self.initial_inventory * (1.0 - inventory_sold_ratio)
-            self.inventory_rand = self.inventory
-        else:
-            self.random_start_idx = np.random.randint(min_start, max_start)
             self.current_step = 0
             self.inventory = self.initial_inventory
             self.inventory_rand = self.initial_inventory
+            
+        else:
+            use_random_start = np.random.random() < self.random_start_prob
+            
+            if use_random_start:
+                self.random_start_idx = np.random.randint(min_start, max_start)
+                self.current_step = np.random.randint(0, self.horizon_steps)
+                
+                random_time_elapsed_ratio = self.current_step / self.horizon_steps
+                inventory_sold_ratio = random_time_elapsed_ratio * np.random.uniform(0.8, 1.2)
+                inventory_sold_ratio = np.clip(inventory_sold_ratio, 0.0, 0.98)
+                
+                self.inventory = self.initial_inventory * (1.0 - inventory_sold_ratio)
+                self.inventory_rand = self.inventory
+            else:
+                self.random_start_idx = np.random.randint(min_start, max_start)
+                self.current_step = 0
+                self.inventory = self.initial_inventory
+                self.inventory_rand = self.initial_inventory
         
         self.current_data_idx = self.random_start_idx # ✅ NEW: Sync data index
         self.twap_inventory = self.inventory_rand
@@ -297,13 +325,24 @@ class OptimalExecutionEnv(gym.Env):
         # ✅ REWARD PART 1: Standard Step Reward
         # ═══════════════════════════════════════════════════════════════
         
+        # 1. Component A: "Cheap Impact" (Execution Alpha)
+        # Did we beat the market price AT THIS MOMENT?
         market_value_sold = agent_quantity * current_price
         execution_alpha = agent_revenue - market_value_sold
         
-        price_deviation = current_price - self.initial_price
-        capped_price_pnl = min(price_deviation, 0) * agent_quantity
+        # 2. Component B: "Tracking Error Penalty" (Symmetric)
+        # OLD: capped_price_pnl = min(price_deviation, 0) * agent_quantity
         
-        total_pnl_dollar = execution_alpha + capped_price_pnl
+        # NEW: Penalize ANY deviation from arrival price.
+        # We use absolute value because drifting up is "luck" (bad process), 
+        # and drifting down is "loss" (bad outcome).
+        price_deviation = current_price - self.initial_price
+        tracking_error_pnl = -abs(price_deviation) * agent_quantity
+        
+        # 3. Total Reward
+        # You might want to weight the tracking error slightly less than pure impact
+        # to ensure the agent still cares about spread crossing.
+        total_pnl_dollar = execution_alpha + tracking_error_pnl
         portfolio_value = self.initial_inventory * self.initial_price
         
         reward = (total_pnl_dollar / portfolio_value) * 10000
@@ -383,12 +422,12 @@ class OptimalExecutionEnv(gym.Env):
             
             # Capped PnL = min(Price - Initial, 0) (Downside risk)
             fs_price_dev = final_price - self.initial_price
-            fs_capped_pnl = min(fs_price_dev, 0) * remaining_qty
+            fs_capped_pnl = -abs(fs_price_dev) * remaining_qty
             
             # 2. Add "Lateness Penalty" (The binary signal)
             # A fixed 20 bps penalty just for triggering this block.
             # This teaches the agent: "Triggering this 'if' statement is bad."
-            lateness_penalty_bps = 200.0
+            lateness_penalty_bps = 400.0
             lateness_penalty_dollar = (lateness_penalty_bps / 10000) * portfolio_value
             
             total_fire_sale_penalty = fs_alpha + fs_capped_pnl - lateness_penalty_dollar

@@ -1030,12 +1030,12 @@ if __name__ == "__main__":
     
     agent, env = train_ppo(
         data_path=data_path,
-        n_episodes=5000,
+        n_episodes=10000,
         horizon_steps=240,
         initial_inventory=1000,
         
         # ✅ CHANGED: Hyperparameters for Robust Training
-        lr=1e-4/2,                            # Slower, more stable learning
+        lr=1e-4/2/2,                            # Slower, more stable learning
         update_interval=20,                 # Faster feedback (approx every 4800 steps)
         
         gamma=1.0,
@@ -1046,6 +1046,6 @@ if __name__ == "__main__":
         random_start_prob=0.9,
         save_interval=100,
         
-        pretrained_model_path='../models/ppo_execution_best_median_nn.pth',
-        override_epsilon=0.2        
+        pretrained_model_path='../models/ppo_execution_best_median_best2.pth',
+        override_epsilon=0.1        
     )
