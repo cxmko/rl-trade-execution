@@ -291,11 +291,22 @@ def run_final_validation(agent: PPOAgent, env: OptimalExecutionEnv, n_episodes: 
     ep_twap_timing_bias = []
     ep_twap_impacts = []
     
+    # ✅ NEW: Data for Extended Analysis
+    ep_indices = []
+    ep_initial_values = []
+    ep_market_returns = [] # <--- NEW LIST
+    
     # Trajectoires d'inventaire (matrice: n_episodes × horizon_steps)
     inventory_trajectories = np.zeros((n_episodes, horizon_steps + 1))
     
     for ep_idx in tqdm(range(n_episodes), desc=f"  {agent_name}", leave=False):
         state, _ = env.reset()
+        
+        # ✅ Capture Episode Context
+        initial_p = env.initial_price
+        ep_indices.append(env.random_start_idx)
+        ep_initial_values.append(initial_inventory * initial_p)
+        
         done = False
         step = 0
         effective_steps = 0
@@ -360,6 +371,11 @@ def run_final_validation(agent: PPOAgent, env: OptimalExecutionEnv, n_episodes: 
             
             state = next_state
             step += 1
+        
+        # <--- NEW CALCULATION
+        final_p = env.prices_history[-1]
+        market_ret = (final_p - initial_p) / initial_p
+        ep_market_returns.append(market_ret)
         
         agent_revenue = info['total_revenue']
         ep_revenues.append(agent_revenue)
@@ -449,7 +465,14 @@ def run_final_validation(agent: PPOAgent, env: OptimalExecutionEnv, n_episodes: 
         'min_inventory_trajectory': min_inventory_trajectory,
         'max_inventory_trajectory': max_inventory_trajectory,
         'robust_cvar': robust_cvar,
-        'robust_win_rate': robust_win_rate
+        'robust_win_rate': robust_win_rate,
+        
+        # ✅ NEW: Raw Data for Extended Analysis
+        'all_revenues': ep_revenues,
+        'all_twap_revenues': ep_twap_revenues,
+        'all_indices': ep_indices,
+        'all_initial_values': ep_initial_values,
+        'all_market_returns': ep_market_returns # <--- RETURN IT
     }
 
 
@@ -627,12 +650,12 @@ def train_ppo(
     
     best_mean_performance = -np.inf
     best_median_performance = -np.inf
-    best_cvar_performance = -np.inf
+    best_vwap_performance = -np.inf # ✅ CHANGED: Was best_cvar_performance
     best_win_rate_performance = -np.inf
     
     best_mean_model_path = model_save_path.replace('.pth', '_best_mean.pth')
     best_median_model_path = model_save_path.replace('.pth', '_best_median.pth')
-    best_cvar_model_path = model_save_path.replace('.pth', '_best_cvar.pth')
+    best_vwap_model_path = model_save_path.replace('.pth', '_best_vwap.pth') # ✅ CHANGED: Was _best_cvar.pth
     best_win_rate_model_path = model_save_path.replace('.pth', '_best_win_rate.pth')
     
     # ═══════════════════════════════════════════════════════════════
@@ -715,11 +738,11 @@ def train_ppo(
                 agent.save(best_median_model_path)
                 print(f"💎 Nouveau meilleur modèle (MÉDIANE) ! Performance: {best_median_performance:.2f}% vs TWAP")
                 
-            # ✅ NEW: Save Best Robust Models
-            if val_metrics['robust_cvar'] > best_cvar_performance:
-                best_cvar_performance = val_metrics['robust_cvar']
-                agent.save(best_cvar_model_path)
-                print(f"🛡️ Nouveau meilleur modèle (CVaR) ! CVaR: {best_cvar_performance:.2f} USDT")
+            # ✅ CHANGED: Save Best VWAP Model instead of CVaR
+            if val_metrics['vwap_diff_bps'] > best_vwap_performance:
+                best_vwap_performance = val_metrics['vwap_diff_bps']
+                agent.save(best_vwap_model_path)
+                print(f"🛡️ Nouveau meilleur modèle (VWAP) ! VWAP Diff: {best_vwap_performance:.2f} bps")
                 
             if val_metrics['robust_win_rate'] > best_win_rate_performance:
                 best_win_rate_performance = val_metrics['robust_win_rate']
@@ -728,7 +751,7 @@ def train_ppo(
             
             main_pbar.set_postfix({
                 'Val_Mean': f"{val_metrics['avg_twap_comparison']:.2f}%",
-                'CVaR': f"{val_metrics['robust_cvar']:.0f}",
+                'VWAP': f"{val_metrics['vwap_diff_bps']:.0f}", # ✅ CHANGED: Display VWAP instead of CVaR
                 'WinRate': f"{val_metrics['robust_win_rate']:.0f}%"
             })
         
@@ -743,7 +766,7 @@ def train_ppo(
     print(f"💾 Modèle final: {model_save_path}")
     print(f"💎 Meilleur (moyenne): {best_mean_model_path} ({best_mean_performance:.2f}%)")
     print(f"💎 Meilleur (médiane): {best_median_model_path} ({best_median_performance:.2f}%)")
-    print(f"🛡️ Meilleur (CVaR):    {best_cvar_model_path} ({best_cvar_performance:.2f})")
+    print(f"🛡️ Meilleur (VWAP):    {best_vwap_model_path} ({best_vwap_performance:.2f} bps)") # ✅ CHANGED
     print(f"🏆 Meilleur (WinRate): {best_win_rate_model_path} ({best_win_rate_performance:.1f}%)")
     print(f"{'='*80}\n")
     
@@ -775,11 +798,11 @@ def train_ppo(
         best_median_agent.load(best_median_model_path)
         agents_to_test.append(('Meilleur (Médiane)', best_median_agent))
         
-    # ✅ NEW: Load Robust Models
-    if os.path.exists(best_cvar_model_path):
-        best_cvar_agent = PPOAgent(state_dim=env_val.observation_space.shape[0], action_dim=env_val.action_space.n, lr=lr, gamma=gamma, epsilon=epsilon, lambda_gae=lambda_gae, hidden_dims=hidden_dims, device='cuda' if os.path.exists('/usr/local/cuda') else 'cpu')
-        best_cvar_agent.load(best_cvar_model_path)
-        agents_to_test.append(('Meilleur (CVaR)', best_cvar_agent))
+    # ✅ CHANGED: Load Best VWAP Model
+    if os.path.exists(best_vwap_model_path):
+        best_vwap_agent = PPOAgent(state_dim=env_val.observation_space.shape[0], action_dim=env_val.action_space.n, lr=lr, gamma=gamma, epsilon=epsilon, lambda_gae=lambda_gae, hidden_dims=hidden_dims, device='cuda' if os.path.exists('/usr/local/cuda') else 'cpu')
+        best_vwap_agent.load(best_vwap_model_path)
+        agents_to_test.append(('Meilleur (VWAP)', best_vwap_agent))
         
     if os.path.exists(best_win_rate_model_path):
         best_win_rate_agent = PPOAgent(state_dim=env_val.observation_space.shape[0], action_dim=env_val.action_space.n, lr=lr, gamma=gamma, epsilon=epsilon, lambda_gae=lambda_gae, hidden_dims=hidden_dims, device='cuda' if os.path.exists('/usr/local/cuda') else 'cpu')
@@ -787,7 +810,23 @@ def train_ppo(
         agents_to_test.append(('Meilleur (WinRate)', best_win_rate_agent))
     
     # Valider chaque agent
+    # ✅ NEW: Collect actions for distribution plot
+    all_actions_data = {}
+    
     for agent_name, test_agent in agents_to_test:
+        # We need to modify run_final_validation to return actions or run a separate loop
+        # For simplicity, let's run a quick separate loop to gather actions
+        actions_list = []
+        for _ in range(50): # Sample 50 episodes for action distribution
+            state, _ = env_val.reset()
+            done = False
+            while not done:
+                action, _, _ = test_agent.select_action(state, deterministic=True)
+                actions_list.append(action)
+                state, _, terminated, truncated, _ = env_val.step(action)
+                done = terminated or truncated
+        all_actions_data[agent_name] = actions_list
+
         result = run_final_validation(
             test_agent, env_val, 1000,
             horizon_steps, initial_inventory, agent_name
@@ -830,6 +869,9 @@ def train_ppo(
     
     plot_final_inventory_evolution(final_results, horizon_steps, initial_inventory)
     
+    # ✅ NEW: Plot Action Distribution
+    plot_action_distribution(all_actions_data, env_val.action_percentages)
+    
     return agent, env_val
 
 
@@ -839,7 +881,8 @@ def plot_final_inventory_evolution(results: list, horizon_steps: int, initial_in
     fig, ax = plt.subplots(figsize=(12, 7))
     
     time_steps = np.arange(0, horizon_steps + 1)
-    colors = ['steelblue', 'darkgreen', 'coral']
+    # ✅ CHANGED: Distinct colors for up to 5 models
+    colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd'] 
     
     for idx, res in enumerate(results):
         avg_traj = res['avg_inventory_trajectory']
@@ -850,18 +893,18 @@ def plot_final_inventory_evolution(results: list, horizon_steps: int, initial_in
         # Tracer la moyenne
         ax.plot(time_steps, avg_traj, 
                 label=f"{res['agent_name']} (Moyenne)", color=color,
-                linewidth=2.5, marker='o', markersize=4, markevery=5)
+                linewidth=2.5, marker='o', markersize=4, markevery=10) # Reduced markers
         
         # Tracer la bande d'écart-type (Variance)
         ax.fill_between(time_steps, 
                         np.maximum(0, avg_traj - std_traj), 
                         np.minimum(initial_inventory, avg_traj + std_traj),
-                        color=color, alpha=0.2, label=f"{res['agent_name']} (±1 std)")
+                        color=color, alpha=0.15, label=f"{res['agent_name']} (±1 std)")
     
     # TWAP de référence (linéaire)
     twap_trajectory = np.linspace(initial_inventory, 0, horizon_steps + 1)
     ax.plot(time_steps, twap_trajectory, '--', label='TWAP (référence)',
-            color='gray', linewidth=2, alpha=0.7)
+            color='black', linewidth=2, alpha=0.6)
     
     ax.set_xlabel('Pas de temps', fontsize=13)
     ax.set_ylabel('Inventaire (BTC)', fontsize=13)
@@ -1024,6 +1067,58 @@ def plot_validation_results(episodes, revenues_mean, revenues_median, lengths_me
     print(f"\n📊 Graphiques de validation sauvegardés: ../sample/validation_results.png")
     plt.show()
 
+def plot_action_distribution(all_actions_data: dict, action_percentages: list):
+    """Visualiser la distribution des choix d'actions pour chaque modèle"""
+    
+    n_models = len(all_actions_data)
+    if n_models == 0:
+        return
+
+    fig, axes = plt.subplots(1, n_models, figsize=(5 * n_models, 5), sharey=True)
+    if n_models == 1:
+        axes = [axes]
+    
+    fig.suptitle('Distribution des Actions Choisies (50 épisodes)', fontsize=16, fontweight='bold')
+    
+    colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd']
+    
+    for idx, (agent_name, actions) in enumerate(all_actions_data.items()):
+        ax = axes[idx]
+        color = colors[idx % len(colors)]
+        
+        # Count frequency of each action index
+        counts = np.bincount(actions, minlength=len(action_percentages))
+        total = sum(counts)
+        freqs = counts / total * 100
+        
+        # Create labels like "10%"
+        labels = [f"{p}%" for p in action_percentages]
+        x_pos = np.arange(len(labels))
+        
+        bars = ax.bar(x_pos, freqs, color=color, alpha=0.7)
+        
+        ax.set_title(agent_name, fontsize=12, fontweight='bold')
+        ax.set_xticks(x_pos)
+        ax.set_xticklabels(labels, rotation=45)
+        ax.set_xlabel('Action (% Inventaire Restant)')
+        if idx == 0:
+            ax.set_ylabel('Fréquence (%)')
+        
+        ax.grid(axis='y', alpha=0.3)
+        
+        # Add percentage labels on top of bars
+        for bar in bars:
+            height = bar.get_height()
+            if height > 1: # Only show if visible
+                ax.text(bar.get_x() + bar.get_width()/2., height + 0.5,
+                        f'{height:.0f}%',
+                        ha='center', va='bottom', fontsize=8)
+
+    plt.tight_layout()
+    plt.savefig('../sample/action_distribution.png', dpi=150, bbox_inches='tight')
+    print(f"\n📊 Distribution des actions sauvegardée: ../sample/action_distribution.png")
+    plt.show()    
+
 
 if __name__ == "__main__":
     data_path = '../data/raw/BTCUSDT_1m_train_2023-01-01_to_2023-12-31.csv'
@@ -1031,11 +1126,11 @@ if __name__ == "__main__":
     agent, env = train_ppo(
         data_path=data_path,
         n_episodes=10000,
-        horizon_steps=240,
-        initial_inventory=1000,
+        horizon_steps=60,
+        initial_inventory=250,
         
         # ✅ CHANGED: Hyperparameters for Robust Training
-        lr=1e-4/2/2,                            # Slower, more stable learning
+        lr=1e-4/2,#/2/2/2,                            # Slower, more stable learning
         update_interval=20,                 # Faster feedback (approx every 4800 steps)
         
         gamma=1.0,
@@ -1046,6 +1141,6 @@ if __name__ == "__main__":
         random_start_prob=0.9,
         save_interval=100,
         
-        pretrained_model_path='../models/ppo_execution_best_median_best2.pth',
-        override_epsilon=0.1        
+        pretrained_model_path='../models/ppo_execution_best_win_rate.pth',
+        override_epsilon=0.2        
     )
