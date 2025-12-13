@@ -427,7 +427,7 @@ class OptimalExecutionEnv(gym.Env):
             # 2. Add "Lateness Penalty" (The binary signal)
             # A fixed 20 bps penalty just for triggering this block.
             # This teaches the agent: "Triggering this 'if' statement is bad."
-            lateness_penalty_bps = 400.0
+            lateness_penalty_bps = 0*400.0
             lateness_penalty_dollar = (lateness_penalty_bps / 10000) * portfolio_value
             
             total_fire_sale_penalty = fs_alpha + fs_capped_pnl - lateness_penalty_dollar

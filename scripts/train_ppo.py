@@ -90,8 +90,8 @@ def run_validation(agent: PPOAgent, env: OptimalExecutionEnv, n_episodes: int,
         while not done:
             current_price = env.prices_history[-1]
             realized_vol = env._calculate_realized_volatility(np.array(env.prices_history))
-            rolling_sigma = env._calculate_rolling_mean(env.realized_vols_history, env.vol_window)
-            rolling_volume = env._calculate_rolling_mean(env.volumes_history, env.vol_window)
+            rolling_sigma = env._calculate_rolling_mean(env.realized_vols_history, env.avg_window)
+            rolling_volume = env._calculate_rolling_mean(env.volumes_history, env.avg_window)
             time_remaining = env.horizon_steps - env.current_step
             
             # TWAP Logic
@@ -330,8 +330,8 @@ def run_final_validation(agent: PPOAgent, env: OptimalExecutionEnv, n_episodes: 
         while not done:
             current_price = env.prices_history[-1]
             realized_vol = env._calculate_realized_volatility(np.array(env.prices_history))
-            rolling_sigma = env._calculate_rolling_mean(env.realized_vols_history, env.vol_window)
-            rolling_volume = env._calculate_rolling_mean(env.volumes_history, env.vol_window)
+            rolling_sigma = env._calculate_rolling_mean(env.realized_vols_history, env.avg_window)
+            rolling_volume = env._calculate_rolling_mean(env.volumes_history, env.avg_window)
             time_remaining = env.horizon_steps - env.current_step
             
             # 1. CALCULER L'ACTION TWAP
@@ -1126,8 +1126,8 @@ if __name__ == "__main__":
     agent, env = train_ppo(
         data_path=data_path,
         n_episodes=10000,
-        horizon_steps=60,
-        initial_inventory=250,
+        horizon_steps=240,
+        initial_inventory=1000,
         
         # ✅ CHANGED: Hyperparameters for Robust Training
         lr=1e-4/2,#/2/2/2,                            # Slower, more stable learning
@@ -1141,6 +1141,6 @@ if __name__ == "__main__":
         random_start_prob=0.9,
         save_interval=100,
         
-        pretrained_model_path='../models/ppo_execution_best_win_rate.pth',
-        override_epsilon=0.2        
+        #pretrained_model_path='../models/ppo_execution_best_win_rate.pth',
+        #override_epsilon=0.2        
     )

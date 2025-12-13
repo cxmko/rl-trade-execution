@@ -437,7 +437,7 @@ if __name__ == "__main__":
     parser.add_argument('--mode', type=str, default='visualize', 
                        choices=['visualize', 'test'],
                        help='Mode: visualize ou test')
-    parser.add_argument('--n_tests', type=int, default=1000,
+    parser.add_argument('--n_tests', type=int, default=10000,
                        help='Nombre de tests')
     parser.add_argument('--n_steps', type=int, default=240,
                        help='Nombre de pas')

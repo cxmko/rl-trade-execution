@@ -1,0 +1,77 @@
+MODE TEST against real observed data: 10000 simulations de 240 pas
+================================================================================
+
+Calibration du modèle GARCH global...
+
+Exécution de 10000 simulations...
+100%|█████████████████████████████████████████████████████████████████| 10000/10000 [09:56<00:00, 16.75it/s]
+
+================================================================================
+STATISTIQUES DE SIMULATION
+================================================================================
+Simulations réussies: 10000 / 10000
+Simulations échouées: 0
+Modèles instables: 66
+
+================================================================================
+RÉSULTATS AGRÉGÉS SUR LES TESTS
+================================================================================
+
+PRIX:
+------------------------------------------------------------
+  mean_diff                : 171.7356 ± 232.2080 (min: 0.0192, max: 2117.8142)
+  mean_rel_error           :     0.60% ±   0.81% (min:   0.00%, max:   7.03%)
+  median_diff              : 175.3133 ± 258.1790 (min: 0.0101, max: 2368.4885)
+  median_rel_error         :     0.61% ±   0.89% (min:   0.00%, max:   7.90%)
+  std_diff                 :  75.2969 ± 115.1785 (min: 0.0037, max: 866.9662)
+  std_rel_error            :   112.64% ± 142.44% (min:   0.01%, max: 863.23%)
+  min_diff                 : 199.3175 ± 285.1924 (min: 0.0000, max: 2284.2043)
+  max_diff                 : 210.7601 ± 312.4058 (min: 0.0000, max: 2588.6465)
+  skewness_diff            :   0.7869 ± 0.6342 (min: 0.0000, max: 3.1757)
+  kurtosis_diff            :   1.4203 ± 1.8580 (min: 0.0000, max: 14.7887)
+
+VOLUMES:
+------------------------------------------------------------
+  mean_diff                :  50.9805 ± 50.1421 (min: 0.0079, max: 290.5614)
+  mean_rel_error           :   156.40% ± 155.56% (min:   0.02%, max: 747.31%)
+  median_diff              :  33.3347 ± 52.1897 (min: 0.0014, max: 267.3271)
+  median_rel_error         :    73.48% ±  63.06% (min:   0.01%, max: 357.93%)
+  std_diff                 :  69.0798 ± 49.4327 (min: 0.0352, max: 242.9956)
+  std_rel_error            :   299.53% ± 306.89% (min:   0.03%, max: 1000.00%)
+  min_diff                 :  10.4705 ± 19.6604 (min: 0.0001, max: 98.2470)
+  max_diff                 : 605.3885 ± 485.9462 (min: 0.0482, max: 2280.9183)
+  skewness_diff            :   1.9084 ± 1.6578 (min: 0.0003, max: 7.7469)
+  kurtosis_diff            :  23.7748 ± 24.7902 (min: 0.0007, max: 119.7746)
+
+VOLATILITÉ RÉALISÉE:
+------------------------------------------------------------
+  mean_diff                :   0.0003 ± 0.0004 (min: 0.0000, max: 0.0037)
+  mean_rel_error           :    63.57% ±  88.57% (min:   0.00%, max: 666.90%)
+  median_diff              :   0.0002 ± 0.0002 (min: 0.0000, max: 0.0024)
+  median_rel_error         :    49.84% ±  58.35% (min:   0.01%, max: 470.43%)
+  std_diff                 :   0.0002 ± 0.0005 (min: 0.0000, max: 0.0040)
+  std_rel_error            :   106.43% ± 153.40% (min:   0.02%, max: 989.51%)
+  min_diff                 :   0.0000 ± 0.0000 (min: 0.0000, max: 0.0000)
+  max_diff                 :   0.0009 ± 0.0017 (min: 0.0000, max: 0.0145)
+  skewness_diff            :   0.8218 ± 0.6263 (min: 0.0001, max: 2.9890)
+  kurtosis_diff            :   1.7585 ± 1.7180 (min: 0.0001, max: 11.7398)
+
+RENDEMENTS:
+------------------------------------------------------------
+  mean_diff                :   0.0000 ± 0.0001 (min: 0.0000, max: 0.0004)
+  mean_rel_error           :  -190.81% ± 1562.99% (min: -22245.16%, max: 1000.00%)
+  median_diff              :   0.0000 ± 0.0000 (min: 0.0000, max: 0.0002)
+  median_rel_error         :  -321.18% ± 5266.14% (min: -358903.07%, max: 1000.00%)
+  std_diff                 :   0.0004 ± 0.0006 (min: 0.0000, max: 0.0052)
+  std_rel_error            :    72.38% ± 104.77% (min:   0.01%, max: 778.02%)
+  min_diff                 :   0.0023 ± 0.0040 (min: 0.0000, max: 0.0285)
+  min_diff                 :   0.0023 ± 0.0040 (min: 0.0000, max: 0.0285)
+  max_diff                 :   0.0021 ± 0.0039 (min: 0.0000, max: 0.0278)
+  skewness_diff            :   1.0713 ± 1.1072 (min: 0.0000, max: 5.8322)
+  kurtosis_diff            :   7.1728 ± 10.0065 (min: 0.0002, max: 58.8475)
+
+✓ Graphique sauvegardé: ../sample/garch_test_summary.png
+
+Génération des graphiques de distribution et corrélation...
+✓ Distributions sauvegardées: ../sample/garch_distributions.png
+✓ Autocorrélation sauvegardée: ../sample/garch_autocorr.png
