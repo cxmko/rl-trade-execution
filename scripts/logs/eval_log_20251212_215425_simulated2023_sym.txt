@@ -1,0 +1,67 @@
+
+================================================================================
+🧪 ÉVALUATION DU MODÈLE: ppo_execution_best_win_rate_s1_b.pth
+🎲 MODE: SIMULATION GARCH
+================================================================================
+Chargement des données depuis ../data/raw/BTCUSDT_1m_train_2023-01-01_to_2023-12-31.csv...
+Calibration globale des modèles GARCH et volume...
+✓ Calibration globale terminée
+✅ Modèle chargé avec succès.
+
+🔍 Validation finale: Agent Évalué (2181 épisodes)
+
+ℹ️  NOTE: The 'Robustness (Bear Mkts)' stats below use the OLD definition: TWAP Revenue <= Initial Portfolio Value.
+
+================================================================================
+📊 VALIDATION FINALE - COMPARAISON DES MODÈLES
+================================================================================
+
+🤖 Agent Évalué
+  ────────────────────────────────────────────────────────────────────────────
+  💰 Revenu Agent (moy):     28,898,105.48 USDT
+  💰 Revenu TWAP (moy):      28,910,305.49 USDT
+  🎯 Perf vs TWAP (moy):             -0.04 %
+  🎯 Perf vs TWAP (med):             -0.02 %
+  🛡️ CVaR (Bear Mkts):          -253545.54 USDT
+  🏆 Win Rate (Bear):                 43.1 %
+  ⚖️ VWAP Différence:                -3.93 bps
+  ⏳ Timing Bias:                     0.34 vs 0.50 (TWAP)
+  📏 Pas effectifs (moy):            190.4
+  📏 Pas effectifs (min/max): 72 / 240
+  💥 Impact moyen Agent :                   20.75 bps
+  💥 Impact moyen TWAP :                 20.15 bps
+  💥 Impact Agent (med/std):  20.27 ± 5.65 bps
+  💥 Impact TWAP (med/std):   19.45 ± 5.62 bps
+
+================================================================================
+
+
+================================================================================
+📈 EXTENDED METRICS & BEAR MARKET ANALYSIS
+================================================================================
+📊 General Win Rate:          39.94%
+📊 Information Ratio (All):   -0.0976
+--------------------------------------------------------------------------------
+🐻 BEAR MARKETS (Worst 20% Returns): 436 episodes
+   Avg Market Return in Bear: -2.06%
+   Max Market Return in Bear: -0.63%
+🐻 Win Rate (Bear):          88.99%
+🐻 Information Ratio (Bear):  0.4502
+🐻 CVaR 5% (Agent - TWAP):    -39.30 bps (Agent Downside Risk)
+🐻 CVaR 5% (TWAP - Agent):    -215.78 bps (TWAP Downside Risk)
+--------------------------------------------------------------------------------
+🏆 BEST Bear Performance (Start Index: 355301)
+   Mkt Return: -18.05%
+   Agent: $24,505,405.14 | TWAP: $22,692,819.40
+   Diff:  $1,812,585.74 (+798.75 bps)
+
+💀 WORST Bear Performance (Start Index: 509767)
+   Mkt Return: -0.67%
+   Agent: $42,481,304.37 | TWAP: $42,778,773.99
+   Diff:  $-297,469.62 (-69.54 bps)
+================================================================================
+
+
+💾 Log saved to: eval_log_20251212_215425.txt
+
+📊 Évolution de l'inventaire sauvegardée: ../sample/inventory_evolution.png

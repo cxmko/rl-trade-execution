@@ -22,7 +22,7 @@ class OptimalExecutionEnv(gym.Env):
         self,
         data_path: str,
         initial_inventory: float = 1000,
-        horizon_steps: int = 240,  # ✅ CHANGED: 60 -> 240 (4 hours)
+        horizon_steps: int = 240,  # 
         lambda_0: float = 0.004,
         alpha: float = 0.5,
         delta: float = 0.05,
@@ -155,7 +155,7 @@ class OptimalExecutionEnv(gym.Env):
         if max_start < min_start:
             raise ValueError(f"Données insuffisantes.")
         
-        # ✅ CHANGED: Logic for Sequential vs Random
+        # Logic for Sequential vs Random
         if self.sequential_mode:
             self.random_start_idx = self.next_sequential_start
             self.next_sequential_start += self.sequential_step
@@ -194,7 +194,6 @@ class OptimalExecutionEnv(gym.Env):
         
         self.initial_price = float(self.historical_data['close'].iloc[self.random_start_idx])
         
-        # ✅ CHANGED: Conditional GARCH Initialization
         if not self.use_real_data:
             # Calibrer GARCH localement
             window_start = self.random_start_idx - self.calibration_window
@@ -217,7 +216,6 @@ class OptimalExecutionEnv(gym.Env):
             )
         else:
             self.garch_simulator = None
-            # ✅ FIX: Define window_start for Real Data mode (start of dataframe is 0)
             window_start = 0
         
         self.total_revenue = 0.0
@@ -264,7 +262,6 @@ class OptimalExecutionEnv(gym.Env):
             padding = [0.0] * (5 - len(recent_vols))
             recent_vols = padding + recent_vols
             
-        # ✅ FIX: Normalize by ROLLING average (Consistent with Impact Logic)
         # Was: avg_long_run_vol = max(1e-6, np.mean(self.realized_vols_history))
         avg_rolling_vol = max(1e-6, self._calculate_rolling_mean(self.realized_vols_history, self.avg_window))
         
@@ -322,7 +319,7 @@ class OptimalExecutionEnv(gym.Env):
         relative_gain = agent_revenue - twap_revenue
         
         # ═══════════════════════════════════════════════════════════════
-        # ✅ REWARD PART 1: Standard Step Reward
+        # ✅ REWARD : Standard Step Reward
         # ═══════════════════════════════════════════════════════════════
         
         # 1. Component A: "Cheap Impact" (Execution Alpha)
@@ -340,8 +337,6 @@ class OptimalExecutionEnv(gym.Env):
         tracking_error_pnl = -abs(price_deviation) * agent_quantity
         
         # 3. Total Reward
-        # You might want to weight the tracking error slightly less than pure impact
-        # to ensure the agent still cares about spread crossing.
         total_pnl_dollar = execution_alpha + tracking_error_pnl
         portfolio_value = self.initial_inventory * self.initial_price
         
@@ -389,10 +384,7 @@ class OptimalExecutionEnv(gym.Env):
         
         self.current_step += 1
         terminated = (self.current_step >= self.horizon_steps)
-        
-        # ═══════════════════════════════════════════════════════════════
-        # ✅ REWARD PART 2: Fire Sale Logic (The Fix)
-        # ═══════════════════════════════════════════════════════════════
+
         
         if terminated and self.inventory > 0:
             remaining_qty = self.inventory
@@ -412,29 +404,22 @@ class OptimalExecutionEnv(gym.Env):
             fire_sale_revenue = remaining_qty * fire_sale_price
             
             self.total_revenue += fire_sale_revenue
-            
-            # --- FIX STARTS HERE ---
-            
-            # 1. Apply Consistent Capped Call Logic
-            # Alpha = Revenue - MarketValue (Pure cost of impact)
+                        
+
             fs_market_value = remaining_qty * final_price
             fs_alpha = fire_sale_revenue - fs_market_value # Always negative (impact cost)
             
-            # Capped PnL = min(Price - Initial, 0) (Downside risk)
             fs_price_dev = final_price - self.initial_price
             fs_capped_pnl = -abs(fs_price_dev) * remaining_qty
             
-            # 2. Add "Lateness Penalty" (The binary signal)
-            # A fixed 20 bps penalty just for triggering this block.
-            # This teaches the agent: "Triggering this 'if' statement is bad."
-            lateness_penalty_bps = 0*400.0
+
+            lateness_penalty_bps = 0.0
             lateness_penalty_dollar = (lateness_penalty_bps / 10000) * portfolio_value
             
             total_fire_sale_penalty = fs_alpha + fs_capped_pnl - lateness_penalty_dollar
             
             reward += (total_fire_sale_penalty / portfolio_value) * 10000
             
-            # --- FIX ENDS HERE ---
             
             agent_quantity += remaining_qty
             agent_revenue += fire_sale_revenue

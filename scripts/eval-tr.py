@@ -252,8 +252,8 @@ def evaluate_model(model_path, data_path, n_episodes=1000, horizon_steps=240, in
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Évaluer un modèle PPO entraîné.")
-    parser.add_argument("--model", type=str,default='../models/ppo_execution_best_win_rate_s1_b.pth', help="Chemin vers le fichier .pth du modèle")
-    parser.add_argument("--data", type=str, default='../data/raw/BTCUSDT_1m_train_2023-01-01_to_2023-12-31.csv', help="Chemin vers les données de test")
+    parser.add_argument("--model", type=str,default='../models/ppo_execution_best_median_cap0.pth', help="Chemin vers le fichier .pth du modèle")
+    parser.add_argument("--data", type=str, default='../data/raw/BTCUSDT_1m_test_2024-01-01_to_2024-12-31.csv', help="Chemin vers les données de test")
     parser.add_argument("--episodes", type=int, default=1000, help="Nombre d'épisodes (ignoré si --full)")
 
     parser.add_argument("--real", action="store_false", help="Utiliser les données réelles (aléatoire)") 

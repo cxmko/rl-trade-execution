@@ -1,0 +1,19 @@
+🔎 Searching for Bear Market scenario (Initial Value > TWAP Revenue)...
+✅ Found scenario! Seed: 76159
+   Initial Val: $59,020,010 | TWAP Rev: $56,461,112
+
+🚀 Starting Detailed Simulation with Seed 76159...
+🏁 Simulation Complete.
+
+========================================
+📊 PERFORMANCE SUMMARY
+========================================
+💰 Total Revenue Agent: $57,110,800.47
+💰 Total Revenue TWAP:  $56,461,111.64
+----------------------------------------
+📈 Agent Avg Price:     $57110.80
+📈 TWAP Avg Price:      $56461.11
+----------------------------------------
+🏆 Performance vs TWAP: +110.00 bps
+========================================
+✅ SUCCESS: The Agent beat the Benchmark!

@@ -575,7 +575,8 @@ def train_ppo(
         lambda_0=0.003,
         alpha=0.5,
         delta=0,
-        random_start_prob=0.0
+        random_start_prob=0.0,
+        use_real_data=True
     )
     
     # ═══════════════════════════════════════════════════════════════

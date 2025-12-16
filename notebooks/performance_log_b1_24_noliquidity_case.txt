@@ -1,0 +1,6 @@
+🔎 Searching for LOW LIQUIDITY scenario...
+   Global Avg Volume: 25
+✅ Found Low Liquidity! Seed 10000
+   Episode Avg Vol: 2 (vs Global 25)
+▶️ Running 💧 LOW LIQUIDITY SCENARIO (Seed: 10000)...
+💰 Agent: $63,866,437 | TWAP: $63,904,404 | Diff: -5.94 bps
