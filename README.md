@@ -151,9 +151,10 @@ We used **Proximal Policy Optimization (PPO)**, an Actor-Critic method, for its 
 ## Evolution of the Agent
 
 The project went through several iterations detailed in the report:
-1.  **DQN Baseline:** Learned to sell, but lacked stability.
-2.  **"Lazy" Agent:** Used a Capped Reward ($min(0, P - P_0)$). It learned to do nothing in bull markets, failing to beat TWAP.
-3.  **Final Agent:** Used **Symmetric Tracking Error**. This forced the agent to treat "Time as Toxic," leading to the robust, risk-averse behavior observed in the final results.
+
+1. **DQN Baseline:** Learned to sell, but lacked stability.
+2. **"Lazy" Agent:** Used a Capped Reward. It learned to do nothing in bull markets, failing to beat TWAP.
+3. **Final Agent:** Used **Symmetric Tracking Error**. This forced the agent to treat "Time as Toxic," leading to the robust, risk-averse behavior observed in the final results.
 
 ## Requirements
 
