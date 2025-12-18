@@ -8,7 +8,7 @@
 
 **Project Status:** **Finished.** The final PPO agent successfully outperforms the TWAP benchmark in 87.4% of Bear Market scenarios on out-of-sample data (2024).
 
-## 📖 Overview
+## Overview
 
 This project implements a **Deep Reinforcement Learning (DRL)** agent designed for the optimal execution of large institutional orders (liquidation) in cryptocurrency markets (BTC/USDT).
 
@@ -166,7 +166,7 @@ The project went through several iterations detailed in the report:
 
 See `requirements.txt` for exact versions.
 
-## 📄 License
+## License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
 
