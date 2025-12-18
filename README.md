@@ -1,160 +1,174 @@
-# Optimal Trade Execution with Reinforcement Learning
 
-## Project overview
 
-This project implements a reinforcement learning (RL) approach for optimal execution of large orders on cryptocurrency markets. The goal is to minimize market impact and maximize the value obtained when executing a large order by adapting the execution strategy to real-time market conditions.
+# Optimal Trade Execution with Deep Reinforcement Learning
 
-## Problem statement
+![Status](https://img.shields.io/badge/Status-Completed-success)
+![Python](https://img.shields.io/badge/Python-3.8%2B-blue)
+![License](https://img.shields.io/badge/License-MIT-green)
 
-When a trader executes a large order, they face a trade-off:
+**Project Status:** ✅ **Finished.** The final PPO agent successfully outperforms the TWAP benchmark in 87.4% of Bear Market scenarios on out-of-sample data (2024).
 
-* Executing quickly risks creating large market impact and degrading the execution price.
-* Executing slowly exposes the trader to market risk (the price may move unfavorably).
+## 📖 Overview
 
-This project aims to find the optimal compromise between these two risks using reinforcement learning.
+This project implements a **Deep Reinforcement Learning (DRL)** agent designed for the optimal execution of large institutional orders (liquidation) in cryptocurrency markets (BTC/USDT).
 
-## Approach
+The goal is to solve the classic **Impact-Time Risk trade-off**:
+*   **Selling too fast** incurs high market impact (slippage).
+*   **Selling too slow** exposes the portfolio to market volatility and potential crashes.
 
-Our approach is characterized by:
+Unlike traditional algorithmic trading strategies (like TWAP) that follow a rigid schedule, our AI agent adapts dynamically to real-time market conditions (liquidity, volatility, and price trends) to minimize **Implementation Shortfall (IS)** and reduce **Tail Risk (CVaR)**.
 
-1. **GARCH market modeling**: We use a GARCH (Generalized AutoRegressive Conditional Heteroskedasticity) model calibrated on real data to simulate realistic price paths that capture the important phenomenon of volatility clustering.
+## 🏆 Key Results
 
-2. **Training on simulated data**: To avoid data scarcity and allow safe exploration, the RL agent is trained on simulated price trajectories.
+The final model (`ppo_execution_best_win_rate_s1_b.pth`) was evaluated on a full year of out-of-sample data (2024).
 
-3. **Validation on real data**: Performance is then evaluated on historical real market data.
+| Metric | TWAP (Benchmark) | AI Agent (PPO) | Improvement |
+| :--- | :--- | :--- | :--- |
+| **Bear Market Win Rate** | N/A | **87.41%** | The Agent beats TWAP in 9 out of 10 crashes. |
+| **Tail Risk (CVaR 5%)** | -79.82 bps | **-12.62 bps** | **6.3x reduction** in extreme losses. |
+| **Avg Impact Cost** | 31.64 bps | **31.12 bps** | Lower impact despite faster execution. |
+| **General Win Rate** | N/A | 34.89% | The agent pays a small "insurance premium" in bull markets. |
 
-## Implemented components
+> **Conclusion:** The agent behaves like a "Smart Insurer." It accepts a negligible opportunity cost in calm markets to provide massive downside protection during liquidity crises.
 
-### 1. Data collection and preprocessing
+## 🛠️ Installation
 
-* Binance data collector to download BTCUSDT history
-* Preprocessing and feature engineering
+1.  **Clone the repository:**
+    ```bash
+    git clone https://github.com/yourusername/rl-trade-execution.git
+    cd rl-trade-execution
+    ```
 
-### 2. GARCH model and simulation
+2.  **Create a virtual environment (optional but recommended):**
+    ```bash
+    python -m venv venv
+    source venv/bin/activate  # On Windows: venv\Scripts\activate
+    ```
 
-* Calibration of a GARCH(1,1) model on historical data
-* Price path generator that reproduces the market’s essential statistical properties
-* Calculation of realized volatility as a consistent measure across simulated and real data
+3.  **Install dependencies:**
+    ```bash
+    pip install -r requirements.txt
+    ```
 
-## Theoretical foundations and design choices
+4.  **Download Data:**
+    The project includes a script to fetch Binance data.
+    ```bash
+    python main.py
+    ```
 
-### GARCH model
+## 🚀 Usage Guide
 
-#### Mathematical formulation
+### 1. Interactive Demo (Recommended)
+To visualize the agent in action against specific scenarios (Flash Crash, Pump & Dump, Low Liquidity), run the Jupyter Notebook:
+```bash
+jupyter notebook notebooks/demo_execution.ipynb
+```
 
-The GARCH model (Generalized AutoRegressive Conditional Heteroskedasticity) is an extension of ARCH models developed by Bollerslev (1986). In its GARCH(1,1) form, the model is defined as:
+### 2. Evaluate the Model
+To reproduce the results from the report on the 2024 Test Set:
+```bash
+# Run full sequential backtest on real data
+python scripts/eval-tr.py --model models/ppo_execution_best_win_rate_s1_b.pth --full --real
+```
+*   `--real`: Uses historical data instead of GARCH simulation.
+*   `--full`: Runs a sliding window over the entire year (2,000+ episodes).
 
-For returns:
-$$r_t = \mu + \sigma_t \cdot Z_t$$
+### 3. Train a New Agent
+To train the PPO agent from scratch using the GARCH Simulator:
+```bash
+python scripts/train_ppo.py --episodes 10000 --lr 0.00005
+```
 
-For the conditional variance:
-$$\sigma_t^2 = \omega + \alpha \cdot r_{t-1}^2 + \beta \cdot \sigma_{t-1}^2$$
-
-Where:
-
-* $r_t$ is the return at time $t$
-* $\mu$ is the mean return (usually close to zero for high-frequency data)
-* $\sigma_t$ is the conditional volatility at time $t$
-* $Z_t$ is standardized white noise, typically distributed as $N(0,1)$
-* $\omega, \alpha, \beta$ are parameters to estimate, with $\omega > 0$, $\alpha, \beta \ge 0$ and $\alpha + \beta < 1$ to ensure stationarity
-
-#### Calibration
-
-Parameter estimation is performed by maximum likelihood:
-
-1. Returns are centered ($r_t - \mu$)
-2. The log-likelihood is defined as:
-   $$L(\omega, \alpha, \beta) = -\frac{1}{2}\sum_{t=1}^T \left(\log(\sigma_t^2) + \frac{(r_t-\mu)^2}{\sigma_t^2}\right)$$
-3. The optimal parameters maximize this log-likelihood
-
-We use 5,000 data points for calibration, which balances:
-
-* Statistical accuracy (enough data)
-* Local relevance (captures recent market regime)
-* Computational efficiency (reasonable compute time)
-
-#### Trajectory simulation
-
-To generate price trajectories from the calibrated model:
-
-1. Initialization:
-
-   * Initial variance: $\sigma_0^2 = \omega/(1-\alpha-\beta)$ (unconditional variance)
-   * Initial price: last observed value $P_0$
-
-2. For each time step $t = 1, 2, \ldots$:
-
-   * Sample $Z_t \sim N(0,1)$
-   * Compute $\sigma_t^2 = \omega + \alpha \cdot r_{t-1}^2 + \beta \cdot \sigma_{t-1}^2$
-   * Compute $r_t = \mu + \sigma_t \cdot Z_t$
-   * Compute the new price: $P_t = P_{t-1} \cdot \exp(r_t)$
-
-#### Realized volatility
-
-To ensure consistency between the simulated environment and real data, we use an identical realized volatility measure in both contexts:
-
-$$\text{realized volatility}*t = \sqrt{\frac{1}{n-1}\sum*{i=t-n+1}^{t} (r_i - \bar{r})^2}$$
-
-Where:
-
-* $n$ is the window size (typically 20 observations)
-* $r_i$ are log returns
-* $\bar{r}$ is the mean return within the window
-
-### Absence of directional momentum
-
-In our GARCH implementation there is no directional momentum in simulated prices for several reasons:
-
-1. **Consistency with financial theory**: At intraday scales, liquid markets such as BTC/USDT show little autocorrelation in returns (weak-form market efficiency).
-
-2. **Avoid overfitting**: An RL agent trained on data with artificial momentum might learn strategies that fail on real markets.
-
-3. **Model robustness**: GARCH(1,1) effectively captures volatility clustering without introducing serial dependence in returns.
-
-This approach was validated empirically by comparing the distributions of simulated and real returns, confirming that the model faithfully reproduces the market’s essential statistical properties.
-
-### State structure for the RL agent
-
-After analysis, we identified the most informative state variables for the RL agent:
-
-1. **Normalized inventory** (remaining quantity to sell / total quantity)
-2. **Normalized remaining time** (time left / total horizon)
-3. **Realized volatility** (standard deviation of returns over a rolling window)
-4. **Relative price** (current price / initial price)
-
-This minimal yet complete representation avoids adding artificial features that would not be informative in a pure GARCH setting.
-
-## Next steps
-
-1. **RL environment development**:
-
-   * Implement a Gymnasium-compatible environment
-   * Model market impact proportional to volatility
-   * Design the reward function
-
-2. **Agent implementation**:
-
-   * DQN or PPO architecture for learning
-   * Action parameterization (percentage of inventory to execute)
-   * Appropriate exploration strategies
-
-3. **Evaluation and optimization**:
-
-   * Comparison with benchmark strategies (TWAP, VWAP)
-   * Sensitivity analysis to model parameters
-   * Out-of-sample tests on market data
-
-## Project structure
+## 📂 Project Structure
 
 ```
 rl-trade-execution/
-├── data/                 # Raw and processed data
-├── src/
-│   ├── data/             # Collection and preprocessing modules
-│   ├── environment/      # GARCH simulator and RL environment
-│   └── models/           # RL agent implementations
-├── scripts/              # Analysis and test scripts
-├── sample/               # Example simulated data
-└── notebooks/            # Exploratory analyses
+├── .gitignore
+├── LICENSE
+├── main.py                         # 📥 Entry point for downloading Binance data
+├── README.md                       # Project documentation
+├── requirements.txt                # Python dependencies
+├── data/
+│   └── raw/                        # Historical market data (CSV)
+│       ├── BTCUSDT_1m_test_2024... # 2024 Out-of-sample Test Data
+│       └──BTCUSDT_1m_train_2023...# 2023 Training Data
+├── models/                         # Trained PyTorch Models
+│   ├── dqn_execution_v2.pth        # Baseline DQN Agent
+│   ├── ppo_execution_best_median_cap0.pth
+│   └── ppo_execution_best_win_rate_s1_b.pth # FINAL CHAMPION MODEL
+├── notebooks/                      # Interactive Analysis
+│   └── demo_execution.ipynb        # Interactive Agent Demo (Visualization)
+│   
+├── report/                         # Final Report
+│   ├── Final Report.pdf            # Final Report
+│   └── sample/                     # Generated figures for the report
+├── sample/                         # Training Artifacts
+│   
+├── scripts/                        # ⚙️ Executable Scripts
+│   ├── analyze_volume.py           # Market Microstructure & Volume Analysis
+│   ├── eval-tr.py                  # 📉 Evaluation Pipeline (PPO)
+│   ├── eval-trdqn.py               # Evaluation Pipeline (DQN)
+│   ├── generate_data_analysis_plots.py
+│   ├── test_garch.py               # GARCH Simulator Unit Tests
+│   ├── test_impact.py              # Market Impact Model Verification
+│   ├── train_dqn.py                # DQN Training Loop
+│   ├── train_ppo.py                # 🏋️‍♂️ PPO Training Loop
+│   └── logs/                       # Detailed Evaluation Logs            
+│       
+└── src/                            # 🧠 Core Logic Library
+    ├── data/
+    │   └── collectors/
+    │       └── binance_data.py     # Binance API Data Collector
+    ├── environment/                # RL Environments
+    │   ├── execution_env.py        # 🌍 Main Trading Environment (PPO)
+    │   ├── execution_envdqn.py     # Environment variant for DQN
+    │   └── garch_simulator.py      # 🎲 "Nightmare" Market Simulator
+    └── models/                     # Neural Network Architectures
+        ├── dqn_agent.py            # Deep Q-Network Implementation
+        └── ppo_agent.py            # PPO Actor-Critic Implementation
 ```
 
+## 🧠 Methodology
+
+### 1. The Environment (execution_env.py)
+We modeled the execution problem as a Markov Decision Process (MDP):
+*   **State Space ($S_t$):** 9-dimensional vector including Inventory, Time Remaining, Liquidity Score, Price Trends, and **Volatility Lags** (to detect regime shifts).
+*   **Action Space ($A_t$):** Discrete percentages of remaining inventory to sell $\{0\%, 1\%, \dots, 100\%\}$.
+*   **Market Impact:** Modeled using the **Square-Root Law** calibrated on Binance order book depth ($\lambda=0.003$).
+*   **Reward Function:** A **Symmetric Reward** minimizing Tracking Error against the Arrival Price. This penalizes both holding inventory too long (risk) and selling too fast (impact).
+
+### 2. The "Nightmare" Simulator (`src/environment/garch_simulator.py`)
+To prevent overfitting to historical dates, we trained the agent on a **GARCH(1,1) Simulator** with Student-t innovations.
+*   **Purpose:** Generates infinite synthetic market data with "fat tails" (extreme crashes) and volatility clustering.
+*   **Result:** The agent trained on this "nightmare" data generalized perfectly to the unseen real-world data of 2024.
+
+### 3. The Algorithm (`src/models/ppo_agent.py`)
+We used **Proximal Policy Optimization (PPO)**, an Actor-Critic method, for its stability in stochastic environments.
+*   **Actor:** Decides the execution schedule.
+*   **Critic:** Estimates the expected cost of the current state.
+*   **Curriculum Learning:** We used random start times during training to force the agent to learn end-of-day liquidation logic early on.
+
+## 🔬 Evolution of the Agent
+
+The project went through several iterations detailed in the report:
+1.  **DQN Baseline:** Learned to sell, but lacked stability.
+2.  **"Lazy" Agent:** Used a Capped Reward ($min(0, P - P_0)$). It learned to do nothing in bull markets, failing to beat TWAP.
+3.  **Final Agent:** Used **Symmetric Tracking Error**. This forced the agent to treat "Time as Toxic," leading to the robust, risk-averse behavior observed in the final results.
+
+## 📦 Requirements
+
+*   Python 3.8+
+*   PyTorch
+*   Gymnasium
+*   Pandas / NumPy
+*   Matplotlib / Seaborn
+*   Arch (for GARCH modeling)
+
+See `requirements.txt` for exact versions.
+
+## 📄 License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
+
+---
+*Authors: Cameron Mouangue, Guicheney Jacques - Institut Polytechnique de Paris*

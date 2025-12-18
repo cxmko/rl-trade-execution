@@ -3,6 +3,7 @@ data/**/*.csv
 
 # Ignorer les fichiers Python compilés
 __pycache__/
+**/__pycache__/
 *.py[cod]
 *$py.class
 *.so
@@ -13,10 +14,12 @@ env/
 venv/
 ENV/
 rl-trade-exec/
-report/
+src/environment/__pycache__
+*.pyc
 
 # Ignorer les fichiers de configuration IDE
 .idea/
 .vscode/
 *.swp
 .DS_Store
+*.tex

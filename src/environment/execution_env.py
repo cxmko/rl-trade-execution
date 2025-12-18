@@ -13,7 +13,7 @@ class OptimalExecutionEnv(gym.Env):
     """
     metadata = {'render_modes': ['human']}
     
-    # ✅ CONSTANTS: Safety thresholds for numerical stability
+    
     MIN_ROLLING_VOL = 0.01       
     MIN_ROLLING_SIGMA = 1e-6     
     MAX_IMPACT_PCT = 0.05        
@@ -31,12 +31,12 @@ class OptimalExecutionEnv(gym.Env):
         avg_window: int = 60,   
         random_start_prob: float = 0.0,
         render_mode: Optional[str] = None,
-        use_real_data: bool = False # ✅ NEW: Flag for Real Data Mode
+        use_real_data: bool = False 
     ):
         super().__init__()
         
         self.render_mode = render_mode
-        self.use_real_data = use_real_data # ✅ NEW
+        self.use_real_data = use_real_data 
         
         # Paramètres d'environnement
         self.initial_inventory = initial_inventory
@@ -51,12 +51,12 @@ class OptimalExecutionEnv(gym.Env):
         self.alpha = alpha
         self.delta = delta
         
-        # ✅ CHANGED: Action Space
+     
         # Actions are now % of REMAINING inventory.
         self.action_percentages = np.array([0, 0.25, 0.5, 1, 2, 5, 10, 25, 50, 75, 100])
         self.action_space = spaces.Discrete(len(self.action_percentages))
         
-        # ✅ CHANGED: State Space (Robustness Features)
+      
         # Dim = 9
         # [inventory_norm, time_rem, liquidity_score, price_ratio, vol_lag1, vol_lag2, vol_lag3, vol_lag4, vol_lag5]
         self.observation_space = spaces.Box(
@@ -81,10 +81,10 @@ class OptimalExecutionEnv(gym.Env):
         self.garch_simulator = None
         self.total_revenue = 0.0
         self.random_start_idx = 0
-        self.current_data_idx = 0 # ✅ NEW: Track position in real data
+        self.current_data_idx = 0 
         self.inventory_rand = 0
         
-        # ✅ NEW: Sequential Backtest State
+        
         self.sequential_mode = False
         self.next_sequential_start = 0
         self.sequential_step = 0
@@ -189,7 +189,7 @@ class OptimalExecutionEnv(gym.Env):
                 self.inventory = self.initial_inventory
                 self.inventory_rand = self.initial_inventory
         
-        self.current_data_idx = self.random_start_idx # ✅ NEW: Sync data index
+        self.current_data_idx = self.random_start_idx 
         self.twap_inventory = self.inventory_rand
         
         self.initial_price = float(self.historical_data['close'].iloc[self.random_start_idx])
@@ -318,9 +318,7 @@ class OptimalExecutionEnv(gym.Env):
         
         relative_gain = agent_revenue - twap_revenue
         
-        # ═══════════════════════════════════════════════════════════════
-        # ✅ REWARD : Standard Step Reward
-        # ═══════════════════════════════════════════════════════════════
+  
         
         # 1. Component A: "Cheap Impact" (Execution Alpha)
         # Did we beat the market price AT THIS MOMENT?
@@ -351,7 +349,7 @@ class OptimalExecutionEnv(gym.Env):
         perm_impact_relative = self._calculate_permanent_impact(temp_impact_relative)
         perm_impact_relative = np.clip(perm_impact_relative, 0, 0.005)
         
-        # ✅ CHANGED: Real Data vs GARCH Logic
+       
         if self.use_real_data:
             self.current_data_idx += 1
             # Safety check

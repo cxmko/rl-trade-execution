@@ -25,7 +25,6 @@ class GarchCalibrator:
         self.mean_return = returns.mean()
         centered_returns = returns - self.mean_return
         
-        # ✅ TUNED: nu=10 (Tails are fat, but not "infinite variance" fat)
         self.model = arch_model(centered_returns, vol='GARCH', p=1, q=1, dist='t', rescale=False)
         self.results = self.model.fit(disp='off', show_warning=False)
         
@@ -116,7 +115,7 @@ class GarchSimulator:
         self.beta = garch_params['beta']
         self.nu = garch_params.get('nu', 10.0)
         
-        # ✅ CRITICAL FIX: Force Zero Drift for Execution Simulation
+        # Force Zero Drift for Execution Simulation
         # We ignore the historical mean return because intraday price is a Martingale.
         # This prevents the "30% drift" artifact.
         self.mean_return = 0.0 
@@ -128,7 +127,7 @@ class GarchSimulator:
         self.last_variance = initial_volatility**2 if initial_volatility else uncond_variance
         self.last_return = 0.0
         
-        # ✅ TUNED: Reduced Jump Probability
+        # Fix Jump Probability
         self.jump_prob = 0.0005  # 0.05% chance (approx once per 33 hours)
         self.jump_size_mean = 0.0
         self.jump_size_std = 0.015 # 1.5% jump size
@@ -147,10 +146,10 @@ class GarchSimulator:
         
         current_volatility = np.sqrt(current_variance)
         
-        # ✅ SAFETY: Cap volatility to realistic max (2% per minute is already a crash)
+        # Cap volatility to realistic max (2% per minute is already a crash)
         current_volatility = min(current_volatility, 0.02)
         
-        # ✅ CRITICAL FIX: Martingale Correction (Jensen's Inequality)
+        # Martingale Correction (Jensen's Inequality)
         # We subtract 0.5 * sigma^2 to ensure E[Price_t] = Price_{t-1}
         # Without this, the price naturally drifts UP due to volatility.
         drift_correction = -0.5 * (current_volatility**2) # Use capped vol for correction
@@ -162,7 +161,7 @@ class GarchSimulator:
             jump = np.random.normal(self.jump_size_mean, self.jump_size_std)
             current_return += jump
         
-        # ✅ SAFETY: Circuit Breaker
+        # Safety: Circuit Breaker
         # Cap single-step return to +/- 5% to prevent numerical explosion
         # (5% in 1 minute is still a massive crash, but keeps math stable)
         current_return = np.clip(current_return, -0.05, 0.05)
