@@ -85,7 +85,7 @@ python scripts/train_ppo.py --episodes 10000 --lr 0.00005
 rl-trade-execution/
 ├── .gitignore
 ├── LICENSE
-├── main.py                         # 📥 Entry point for downloading Binance data
+├── main.py                         # Entry point for downloading Binance data
 ├── README.md                       # Project documentation
 ├── requirements.txt                # Python dependencies
 ├── data/
@@ -104,25 +104,25 @@ rl-trade-execution/
 │   └── sample/                     # Generated figures for the report
 ├── sample/                         # Training Artifacts
 │   
-├── scripts/                        # ⚙️ Executable Scripts
+├── scripts/                        # Executable Scripts
 │   ├── analyze_volume.py           # Market Microstructure & Volume Analysis
-│   ├── eval-tr.py                  # 📉 Evaluation Pipeline (PPO)
+│   ├── eval-tr.py                  #  Evaluation Pipeline (PPO)
 │   ├── eval-trdqn.py               # Evaluation Pipeline (DQN)
 │   ├── generate_data_analysis_plots.py
 │   ├── test_garch.py               # GARCH Simulator Unit Tests
 │   ├── test_impact.py              # Market Impact Model Verification
 │   ├── train_dqn.py                # DQN Training Loop
-│   ├── train_ppo.py                # 🏋️‍♂️ PPO Training Loop
+│   ├── train_ppo.py                # PPO Training Loop
 │   └── logs/                       # Detailed Evaluation Logs            
 │       
-└── src/                            # 🧠 Core Logic Library
+└── src/                            # Core Logic Library
     ├── data/
     │   └── collectors/
     │       └── binance_data.py     # Binance API Data Collector
     ├── environment/                # RL Environments
-    │   ├── execution_env.py        # 🌍 Main Trading Environment (PPO)
+    │   ├── execution_env.py        # Main Trading Environment (PPO)
     │   ├── execution_envdqn.py     # Environment variant for DQN
-    │   └── garch_simulator.py      # 🎲 "Nightmare" Market Simulator
+    │   └── garch_simulator.py      # "Nightmare" Market Simulator
     └── models/                     # Neural Network Architectures
         ├── dqn_agent.py            # Deep Q-Network Implementation
         └── ppo_agent.py            # PPO Actor-Critic Implementation
@@ -132,10 +132,10 @@ rl-trade-execution/
 
 ### 1. The Environment (execution_env.py)
 We modeled the execution problem as a Markov Decision Process (MDP):
-*   **State Space ($S_t$):** 9-dimensional vector including Inventory, Time Remaining, Liquidity Score, Price Trends, and **Volatility Lags** (to detect regime shifts).
-*   **Action Space ($A_t$):** Discrete percentages of remaining inventory to sell $\{0\%, 1\%, \dots, 100\%\}$.
-*   **Market Impact:** Modeled using the **Square-Root Law** calibrated on Binance order book depth ($\lambda=0.003$).
-*   **Reward Function:** A **Symmetric Reward** minimizing Tracking Error against the Arrival Price. This penalizes both holding inventory too long (risk) and selling too fast (impact).
+* **State Space ($S_t$):** 9-dimensional vector including Inventory, Time Remaining, Liquidity Score, Price Trends, and **Volatility Lags** (to detect regime shifts).
+* **Action Space ($A_t$):** Discrete percentages of remaining inventory to sell $\{0\%, 1\%, \dots, 100\%\}$.
+* **Market Impact:** Modeled using the **Square-Root Law** calibrated on Binance order book depth ($\lambda=0.003$).
+* **Reward Function:** A **Symmetric Reward** minimizing Tracking Error against the Arrival Price. This penalizes both holding inventory too long (risk) and selling too fast (impact).
 
 ### 2. The "Nightmare" Simulator (`src/environment/garch_simulator.py`)
 To prevent overfitting to historical dates, we trained the agent on a **GARCH(1,1) Simulator** with Student-t innovations.
